@@ -1,0 +1,20 @@
+[package]
+name = "tt"
+version = "0.1.0"
+authors = ["Bill Moyers <moyers@agora-net.com>"]
+
+[dependencies]
+time = "0.1.38"
+hyper = "0.11"
+tokio-core = "0.1"
+clap = "~2.28"
+rpassword = "2.0.0"
+serde = "1.0.23"
+serde_derive = "1.0.23"
+serde_json = "1.0.7"
+futures = "0.1"
+hyper-tls = "0.1.2"
+
+[dependencies.rusqlite]
+version = "0.13.0"
+features = ["bundled"]
