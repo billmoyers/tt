@@ -74,7 +74,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 
 					#[derive(Deserialize, Debug)]
 					struct TeamworkTask {
-						id: String,
+						id: serde_json::Value,
 						#[serde(rename="content")]
 						name: String
 					}
