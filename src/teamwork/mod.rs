@@ -27,7 +27,6 @@ use futures::future;
 use futures::stream;
 
 pub struct Teamwork<'a> {
-	path: &'a std::path::Path,
 	conn: &'a Connection,
 	api_key: String,
 	base_url: String
@@ -35,7 +34,18 @@ pub struct Teamwork<'a> {
 
 impl<'a> TimeTracker for Teamwork<'a> {
 	fn projects(&self) -> Result<Vec<Project>, rusqlite::Error> {
-		Ok(vec![])
+		let mut stmt = self.conn.prepare("SELECT id, name FROM project ORDER BY id")?;
+		let project_iter = stmt.query_map(&[], |a| {
+			Project {
+				id: a.get(0),
+				name: a.get(1)
+			}
+		})?;
+		let mut v = Vec::new();
+		for p in project_iter {
+			v.push(p?);
+		}
+		Ok(v)
 	}
 
 	fn down(&self) -> Result<(), Error> {
@@ -101,7 +111,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 			
 			let mut stmt = self.conn.prepare("REPLACE INTO project (id, name) VALUES (?, ?)").unwrap();
 			for t in twtasks {
-				stmt.execute(&[&t.id, &t.name]);
+				stmt.execute(&[&t.id, &t.name]).unwrap();
 			}
 		}).collect::<()>();
 
@@ -114,7 +124,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 }
 
 impl<'a> Teamwork<'a> {
-	pub fn new(conn: &'a Connection, path: &'a std::path::Path) -> Result<Teamwork<'a>, Error> {
+	pub fn new(conn: &'a Connection) -> Result<Teamwork<'a>, Error> {
 		let mut stmt = conn.prepare("SELECT teamwork_api_key, teamwork_base_url FROM metadata")?;
 		
 		let mut api_key = None;
@@ -156,7 +166,6 @@ impl<'a> Teamwork<'a> {
 
 		Ok(Teamwork {
 			conn: conn,
-			path: path,
 			api_key: a.clone(),
 			base_url: b.clone()
 		})

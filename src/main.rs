@@ -35,7 +35,8 @@ struct Timeblock {
 pub enum Error {
 	RusqliteError(rusqlite::Error),
 	IOError(std::io::Error),
-	HyperError(hyper::Error)
+	HyperError(hyper::Error),
+	TTError(String)
 }
 
 impl std::convert::From<rusqlite::Error> for Error {
@@ -124,18 +125,21 @@ fn upgrade(conn: &Connection, vto: i32) -> Result<i32, rusqlite::Error> {
 	Ok(vto)
 }
 
-fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) {
+fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 	match m.subcommand_name() {
 		Some("down") => {
-			s.down();
+			s.down()?;
 		}
 		Some("projects") => {
-			s.projects();
+			for p in s.projects()? {
+				println!("{}", p.name);
+			}
 		}
 		_ => {
-			panic!("No commands specified.");
+			Error::TTError("No commands specified.".to_string());
 		}
 	}
+	Ok(())
 }
 
 
@@ -148,10 +152,9 @@ fn main2() -> Result<(), Error> {
 	path.push("/src/.tt.sqlite");
 	let conn = Connection::open(path.as_path())?;
 	//TODO Handle choosing the sub-system
-	upgrade(&conn, 0);
-	let t = teamwork::Teamwork::new(&conn, path.as_path())?;
-	dispatch(&m, &t);
-	Ok(())
+	upgrade(&conn, 0)?;
+	let t = teamwork::Teamwork::new(&conn)?;
+	Ok(dispatch(&m, &t)?)
 }
 
 fn main() {
