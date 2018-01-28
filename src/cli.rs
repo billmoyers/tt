@@ -2,7 +2,7 @@ use clap::{Arg, App, SubCommand};
 
 pub fn build_cli() -> App<'static, 'static> {
 	App::new("TimeTracker")
-		.subcommand(SubCommand::with_name("setup")
+		.subcommand(SubCommand::with_name("down")
 		)
 		.subcommand(SubCommand::with_name("projects")
 		)
