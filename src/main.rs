@@ -57,7 +57,7 @@ impl std::convert::From<hyper::Error> for Error {
 
 trait TimeTracker {
 	fn projects(&self) -> Result<Vec<Project>, rusqlite::Error>;
-	//fn punchin(&self, proj: Project) -> Result<Timeblock, Error>;
+	fn punchin(&self, proj: &Project) -> Result<(), Error>;
 	//fn punchout(&self, tb: Timeblock) -> Result<Timeblock, Error>;
 
 	fn down(&self) -> Result<(), Error>;
@@ -126,11 +126,20 @@ fn upgrade(conn: &Connection, vto: i32) -> Result<i32, rusqlite::Error> {
 }
 
 fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
-	match m.subcommand_name() {
-		Some("down") => {
+	match m.subcommand() {
+		("down", Some(_)) => {
 			s.down()?;
 		}
-		Some("projects") => {
+		("punchin", Some(punchin_matches)) => {
+			let name = punchin_matches.value_of("project").unwrap();
+			let projects = s.projects()?;
+			let index = projects.iter().position(|p| {
+				p.name == name || p.id == name
+			}).unwrap();
+			let mut proj = projects.get(index).unwrap();
+			s.punchin(proj)?;
+		}
+		("projects", Some(_)) => {
 			for p in s.projects()? {
 				println!("{}", p.name);
 			}

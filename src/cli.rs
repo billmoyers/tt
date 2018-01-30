@@ -5,6 +5,13 @@ pub fn build_cli() -> App<'static, 'static> {
 		.subcommand(SubCommand::with_name("down")
 		)
 		.subcommand(SubCommand::with_name("projects")
+
+		)
+		.subcommand(SubCommand::with_name("punchin")
+			.arg(Arg::with_name("project")
+				.required(true)
+				.index(1)
+			)
 		)
 		.arg(Arg::with_name("config")
 			.short("c")

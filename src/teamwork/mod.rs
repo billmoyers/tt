@@ -33,6 +33,16 @@ pub struct Teamwork<'a> {
 }
 
 impl<'a> TimeTracker for Teamwork<'a> {
+	fn punchin(&self, proj: &Project) -> Result<(), Error> {
+		/*Timeblock {
+			id: 
+			project_id: 'a'
+			start: 
+			end: None
+		}*/
+		Ok(())
+	}
+
 	fn projects(&self) -> Result<Vec<Project>, rusqlite::Error> {
 		let mut stmt = self.conn.prepare("SELECT id, name FROM project ORDER BY id")?;
 		let project_iter = stmt.query_map(&[], |a| {
