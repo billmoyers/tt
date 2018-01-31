@@ -25,7 +25,7 @@ struct Project {
 
 #[derive(Debug)]
 struct Timeblock {
-	id: String,
+	remote_id: Option<String>,
 	project_id: String,
 	start: Timespec,
 	end: Option<Timespec>
@@ -57,11 +57,20 @@ impl std::convert::From<hyper::Error> for Error {
 
 trait TimeTracker {
 	fn projects(&self) -> Result<Vec<Project>, rusqlite::Error>;
-	fn punchin(&self, proj: &Project) -> Result<(), Error>;
+	//fn punchin(&self, proj: &Project) -> Result<(), Error>;
 	//fn punchout(&self, tb: Timeblock) -> Result<Timeblock, Error>;
 
 	fn down(&self) -> Result<(), Error>;
 	fn up(&self) -> Result<(), Error>;
+
+	fn punchin(&self, proj: &Project) -> Result<Timeblock, Error> {
+		Ok(Timeblock {
+			remote_id: None,
+			project_id: proj.id.clone(),
+			start: time::get_time(),
+			end: None
+		})
+	}
 }
 
 fn upgrade(conn: &Connection, vto: i32) -> Result<i32, rusqlite::Error> {
@@ -137,7 +146,8 @@ fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 				p.name == name || p.id == name
 			}).unwrap();
 			let mut proj = projects.get(index).unwrap();
-			s.punchin(proj)?;
+			let t = s.punchin(proj)?;
+			println!("{:?}", t);
 		}
 		("projects", Some(_)) => {
 			for p in s.projects()? {
