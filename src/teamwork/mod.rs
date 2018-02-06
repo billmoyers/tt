@@ -16,7 +16,6 @@ use futures::{
 
 use super::{ TimeTracker, Project, Error };
 use super::std;
-use super::rusqlite;
 use super::hyper;
 use super::serde_json;
 
@@ -26,6 +25,8 @@ use super::tokio_core;
 use futures::future;
 use futures::stream;
 
+use super::ProjectDataSource;
+
 pub struct Teamwork<'a> {
 	conn: &'a Connection,
 	api_key: String,
@@ -33,21 +34,9 @@ pub struct Teamwork<'a> {
 }
 
 impl<'a> TimeTracker for Teamwork<'a> {
-	fn projects(&self) -> Result<Vec<Project>, rusqlite::Error> {
-		let mut stmt = self.conn.prepare("SELECT id, name FROM project ORDER BY id")?;
-		let project_iter = stmt.query_map(&[], |a| {
-			Project {
-				id: a.get(0),
-				name: a.get(1)
-			}
-		})?;
-		let mut v = Vec::new();
-		for p in project_iter {
-			v.push(p?);
-		}
-		Ok(v)
+	fn conn(&self) -> &Connection {
+		self.conn
 	}
-
 	fn down(&self) -> Result<(), Error> {
 		let mut core = tokio_core::reactor::Core::new().unwrap();
 		let handle = core.handle();
@@ -61,10 +50,22 @@ impl<'a> TimeTracker for Teamwork<'a> {
 			assert_eq!(res.status(), hyper::Ok);
 
 			#[derive(Deserialize, Debug)]
+			struct TeamworkProject {
+				id: String,
+				name: String
+			}
+			impl TeamworkProject {
+				fn pid(&self) -> String {
+					format!("/projects/{}", self.id)
+				}
+			}
+
+
+			#[derive(Deserialize, Debug)]
 			struct TeamworkProjectsResult {
 				#[serde(rename="STATUS")]
 				status: String,
-				projects: Vec<Project>
+				projects: Vec<TeamworkProject>
 			}
 
 			Teamwork::body(res).and_then(|s| {
@@ -76,17 +77,23 @@ impl<'a> TimeTracker for Teamwork<'a> {
 		let twprojects = core.run(work).unwrap();
 
 		twprojects.into_iter().map(|p|{
-			println!("{:?} > Tasks: ", p.name);
+			let n = p.name.clone();
+			let pp = self.conn.upsert(n, p.pid(), None).unwrap();
+
 			let req = self.get(format!("/projects/{}/tasks.json", p.id).to_string()).unwrap();
 			let work = client.request(req).and_then(|res| {
 				assert_eq!(res.status(), hyper::Ok);
 				Teamwork::body(res).and_then(|s|{
-
 					#[derive(Deserialize, Debug)]
 					struct TeamworkTask {
 						id: serde_json::Value,
 						#[serde(rename="content")]
 						name: String
+					}
+					impl TeamworkTask {
+						fn pid(&self) -> String {
+							format!("/tasks/{}", self.id)
+						}
 					}
 
 					#[derive(Deserialize, Debug)]
@@ -99,20 +106,13 @@ impl<'a> TimeTracker for Teamwork<'a> {
 
 					let r = serde_json::from_str::<TeamworkTasksResult>(&s).unwrap();
 					let x = r.tasks.into_iter().map(|t| {
-						Project {
-							id: format!("{}", t.id),
-							name: format!("{} > {}", p.name, t.name)
-						}
+						let n = t.name.clone();
+						self.conn.upsert(n, t.pid(), Some(pp.ev.eid))
 					});
 					stream::iter_ok::<_, hyper::Error>(x).collect()
 				})
 			});
-			let twtasks = core.run(work).unwrap();
-			
-			let mut stmt = self.conn.prepare("REPLACE INTO project (id, name) VALUES (?, ?)").unwrap();
-			for t in twtasks {
-				stmt.execute(&[&t.id, &t.name]).unwrap();
-			}
+			core.run(work).unwrap();
 		}).collect::<()>();
 
 		Ok(())

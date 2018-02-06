@@ -16,19 +16,96 @@ mod teamwork;
 
 use time::Timespec;
 use rusqlite::Connection;
+use rusqlite::types::ToSql;
 
-#[derive(Debug, Deserialize)]
-struct Project {
-	id: String,
-	name: String
+type RemoteId = String;
+type DbId = i64;
+
+#[derive(Debug)]
+struct EntityVersion {
+	eid: DbId,
+	vid: DbId,
+	vtime: Timespec
+}
+
+#[derive(Debug)]
+pub struct Project {
+	remote_id: RemoteId,
+	name: String,
+	parent_eid: Option<DbId>,
+	alive: bool,
+	ev: EntityVersion
+}
+static SQL_0: [&'static str; 2] = ["
+	CREATE TABLE project_entity (
+		id INTEGER PRIMARY KEY
+	);
+","
+	CREATE TABLE project (
+		remote_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		parent_eid INTEGER DEFAULT NULL REFERENCES project_entity(id),
+		alive BOOLEAN DEFAULT 1,
+
+		eid INTEGER NOT NULL REFERENCES project_entity(id),
+		vid INTEGER NOT NULL,
+		vtime TIMESTAMP NOT NULL,
+
+		UNIQUE (eid, vid),
+		UNIQUE (eid, remote_id)
+	);
+"
+];
+pub trait ProjectDataSource {
+	fn upsert(&self, name: String, remote_id: RemoteId, parent_eid: Option<DbId>) -> Result<Project, Error>;
+	fn get(&self, remote_id: RemoteId) -> Result<Option<Project>, Error>;
+	fn list(&self) -> Result<Vec<Project>, Error>;
+}
+
+impl ProjectDataSource for rusqlite::Connection {
+	fn upsert(&self, name: String, remote_id: RemoteId, parent_eid: Option<DbId>) -> Result<Project, Error> {
+		match self.get(remote_id.clone())? {
+			Some(_) => {
+				//Project.update(conn, p)
+				Err(Error::TTError("not implemented".to_string()))
+			}
+			_ => {
+				self.prepare("INSERT INTO project_entity VALUES (NULL)")?.execute(&[])?;
+				let eid: DbId = self.last_insert_rowid();
+				let vtime = time::get_time();
+				let vid = 0;
+				self.prepare("INSERT INTO project (remote_id, name, parent_eid, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &name, &parent_eid.to_sql()?, &eid, &vid, &vtime])?;
+				Ok(Project {
+					remote_id: remote_id,
+					name: name,
+					parent_eid: parent_eid,
+					alive: true,
+					ev: EntityVersion {
+						eid: eid,
+						vid: vid,
+						vtime: vtime
+					}
+				})
+			}
+		}
+	}
+
+	fn get(&self, remote_id: RemoteId) -> Result<Option<Project>, Error> {
+		Ok(None)
+	}
+	fn list(&self) -> Result<Vec<Project>, Error> {
+		Ok(Vec::new())
+	}
 }
 
 #[derive(Debug)]
 struct Timeblock {
-	remote_id: Option<String>,
-	project_id: String,
+	remote_id: Option<RemoteId>,
+	project_eid: Option<DbId>,
 	start: Timespec,
-	end: Option<Timespec>
+	end: Option<Timespec>,
+	alive: bool,
+	ev: EntityVersion
 }
 
 #[derive(Debug)]
@@ -56,20 +133,26 @@ impl std::convert::From<hyper::Error> for Error {
 }
 
 trait TimeTracker {
-	fn projects(&self) -> Result<Vec<Project>, rusqlite::Error>;
 	//fn punchin(&self, proj: &Project) -> Result<(), Error>;
 	//fn punchout(&self, tb: Timeblock) -> Result<Timeblock, Error>;
+
+	fn conn(&self) -> &Connection;
 
 	fn down(&self) -> Result<(), Error>;
 	fn up(&self) -> Result<(), Error>;
 
-	fn punchin(&self, proj: &Project) -> Result<Timeblock, Error> {
-		Ok(Timeblock {
+//	fn get(conn: &Connection, eid: DbId) -> Result<Option<Project>, Error>;
+//	fn update(conn: &Connection, proj: Project) -> Result<Project, Error>;
+//	fn delete(conn: &Connection, proj: Project) -> Result<Project, Error>;
+
+	fn punchin(&self, proj: &Project) -> Result<(), Error> {
+		/*Ok(Timeblock {
 			remote_id: None,
 			project_id: proj.id.clone(),
 			start: time::get_time(),
 			end: None
-		})
+		})*/
+		Ok(())
 	}
 }
 
@@ -107,18 +190,33 @@ fn upgrade(conn: &Connection, vto: i32) -> Result<i32, rusqlite::Error> {
 				conn.execute("
 					INSERT INTO metadata (version) VALUES (0);
 				", &[])?;
+				conn.execute(SQL_0[0], &[])?;
+				conn.execute(SQL_0[1], &[])?;
 				conn.execute("
-					CREATE TABLE project (
-						id TEXT PRIMARY KEY,
-						name TEXT NOT NULL
+					CREATE TABLE timeblock_entity (
+						id INTEGER PRIMARY KEY,
+						last_sync_vid INTEGER,
+						last_sync_time TIMESTAMP
 					);
 				", &[])?;
 				conn.execute("
 					CREATE TABLE timeblock (
-						id TEXT PRIMARY KEY,
-						project_id TEXT NOT NULL REFERENCES project(id),
+						remote_id TEXT DEFAULT NULL,
+						project_eid TEXT NOT NULL REFERENCES project_entity(id),
 						start TIMESTAMP NOT NULL,
-						end TIMESTAMP
+						end TIMESTAMP DEFAULT NULL,
+						billable BOOLEAN,
+						notes TEXT NOT NULL DEFAULT '',
+						tags TEXT NOT NULL DEFAULT '',
+						alive BOOLEAN DEFAULT 1,
+						
+						eid INTEGER NOT NULL REFERENCES timeblock_entity(id),
+						vid INTEGER NOT NULL,
+						vtime TIMESTAMP NOT NULL,
+
+						CHECK (remote_id IS NULL OR end IS NOT NULL)
+						UNIQUE (eid, vid),
+						UNIQUE (eid, remote_id)
 					);
 				", &[])?;
 			}
@@ -141,16 +239,16 @@ fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 		}
 		("punchin", Some(punchin_matches)) => {
 			let name = punchin_matches.value_of("project").unwrap();
-			let projects = s.projects()?;
+			let projects = s.conn().list()?;
 			let index = projects.iter().position(|p| {
-				p.name == name || p.id == name
+				p.name == name || p.remote_id == name
 			}).unwrap();
 			let mut proj = projects.get(index).unwrap();
 			let t = s.punchin(proj)?;
 			println!("{:?}", t);
 		}
 		("projects", Some(_)) => {
-			for p in s.projects()? {
+			for p in s.conn().list()? {
 				println!("{}", p.name);
 			}
 		}
