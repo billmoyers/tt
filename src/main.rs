@@ -22,7 +22,7 @@ type RemoteId = String;
 type DbId = i64;
 
 #[derive(Debug)]
-struct EntityVersion {
+pub struct EntityVersion {
 	eid: DbId,
 	vid: DbId,
 	vtime: Timespec
@@ -35,6 +35,12 @@ pub struct Project {
 	parent_eid: Option<DbId>,
 	alive: bool,
 	ev: EntityVersion
+}
+pub enum ProjectRef {
+	EV(EntityVersion),
+	EId(DbId),
+	RemoteId(RemoteId),
+	Obj(Project)
 }
 static SQL_0: [&'static str; 2] = ["
 	CREATE TABLE project_entity (
@@ -58,13 +64,13 @@ static SQL_0: [&'static str; 2] = ["
 ];
 pub trait ProjectDataSource {
 	fn upsert(&self, name: String, remote_id: RemoteId, parent_eid: Option<DbId>) -> Result<Project, Error>;
-	fn get(&self, remote_id: RemoteId) -> Result<Option<Project>, Error>;
-	fn list(&self) -> Result<Vec<Project>, Error>;
+	fn get(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Option<Project>, rusqlite::Error>;
+	fn list(&self, when: Option<Timespec>) -> Result<Vec<Project>, Error>;
 }
 
 impl ProjectDataSource for rusqlite::Connection {
 	fn upsert(&self, name: String, remote_id: RemoteId, parent_eid: Option<DbId>) -> Result<Project, Error> {
-		match self.get(remote_id.clone())? {
+		match self.get(ProjectRef::RemoteId(remote_id.clone()), None)? {
 			Some(_) => {
 				//Project.update(conn, p)
 				Err(Error::TTError("not implemented".to_string()))
@@ -90,11 +96,70 @@ impl ProjectDataSource for rusqlite::Connection {
 		}
 	}
 
-	fn get(&self, remote_id: RemoteId) -> Result<Option<Project>, Error> {
-		Ok(None)
+	fn get(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Option<Project>, rusqlite::Error> {
+		match proj {
+			ProjectRef::Obj(p) => {
+				Ok(Some(p))
+			}
+			_ => {
+				let mut stmt = match proj {
+					ProjectRef::EV(_) => {
+						self.prepare("SELECT p.* FROM project AS p WHERE p.eid=? AND p.vid IN (SELECT MAX(vid) FROM project AS p2 WHERE p2.eid=p.eid AND p2.vtime <= ?) LIMIT 1")?
+					}
+					ProjectRef::EId(_) => {
+						self.prepare("SELECT p.* FROM project AS p WHERE p.eid=? AND p.vid IN (SELECT MAX(vid) FROM project AS p2 WHERE p2.eid=p.eid AND p2.vtime <= ?) LIMIT 1")?
+					}
+					ProjectRef::RemoteId(_) => {
+						self.prepare("SELECT p.* FROM project AS p WHERE p.remote_id=? AND p.vid IN (SELECT MAX(vid) FROM project AS p2 WHERE p2.eid=p.eid AND p2.vtime <= ?) LIMIT 1")?
+					}
+					ProjectRef::Obj(_) => {
+						panic!("Impossible")
+					}
+				};
+				let a = match proj {
+					ProjectRef::EV(ev) => { format!("{}", ev.eid) }
+					ProjectRef::EId(eid) => { format!("{}", eid) }
+					ProjectRef::RemoteId(remote_id) => { remote_id.clone() }
+					ProjectRef::Obj(_) => { panic!("Impossible") }
+				};
+
+				stmt.query_row(&[&a], |row| {
+					Some(Project {
+						remote_id: row.get(0),
+						name: row.get(1),
+						parent_eid: row.get(2),
+						alive: row.get(3),
+						ev: EntityVersion {
+							eid: row.get(4),
+							vid: row.get(5),
+							vtime: row.get(6)
+						}
+					})
+				})
+			}
+		}
 	}
-	fn list(&self) -> Result<Vec<Project>, Error> {
-		Ok(Vec::new())
+	fn list(&self, when: Option<Timespec>) -> Result<Vec<Project>, Error> {
+		let mut stmt = self.prepare("SELECT p.* FROM project AS p WHERE p.vid IN (SELECT MAX(vid) FROM project AS p2 WHERE p2.eid=p.eid AND p2.vtime <= ?) ORDER BY eid")?;
+		let t = match when {
+			Some(t) => { t }
+			_ => { time::get_time() }
+		};
+
+		let out = stmt.query_map(&[&t], |row| {
+			Project {
+				remote_id: row.get(0),
+				name: row.get(1),
+				parent_eid: row.get(2),
+				alive: row.get(3),
+				ev: EntityVersion {
+					eid: row.get(4),
+					vid: row.get(5),
+					vtime: row.get(6)
+				}
+			}
+		})?.map(|x| x.unwrap()).collect();
+		Ok(out)
 	}
 }
 
@@ -239,7 +304,7 @@ fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 		}
 		("punchin", Some(punchin_matches)) => {
 			let name = punchin_matches.value_of("project").unwrap();
-			let projects = s.conn().list()?;
+			let projects = s.conn().list(None)?;
 			let index = projects.iter().position(|p| {
 				p.name == name || p.remote_id == name
 			}).unwrap();
@@ -248,7 +313,7 @@ fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 			println!("{:?}", t);
 		}
 		("projects", Some(_)) => {
-			for p in s.conn().list()? {
+			for p in s.conn().list(None)? {
 				println!("{}", p.name);
 			}
 		}
