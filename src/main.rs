@@ -57,8 +57,7 @@ static SQL_0: [&'static str; 2] = ["
 		vid INTEGER NOT NULL,
 		vtime TIMESTAMP NOT NULL,
 
-		UNIQUE (eid, vid),
-		UNIQUE (eid, remote_id)
+		UNIQUE (eid, vid)
 	);
 "
 ];
@@ -72,9 +71,21 @@ pub trait ProjectDataSource {
 impl ProjectDataSource for rusqlite::Connection {
 	fn upsert(&self, name: String, remote_id: RemoteId, parent_eid: Option<DbId>) -> Result<Project, Error> {
 		match self.get(ProjectRef::RemoteId(remote_id.clone()), None)? {
-			Some(_) => {
-				//Project.update(conn, p)
-				Err(Error::TTError("not implemented".to_string()))
+			Some(p) => {
+				let vtime = time::get_time();
+				let vid = p.ev.vid+1;
+				self.prepare("INSERT INTO project (remote_id, name, parent_eid, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &name, &parent_eid.to_sql()?, &p.ev.eid, &vid, &vtime])?;
+				Ok(Project {
+					remote_id: remote_id,
+					name: name,
+					parent_eid: parent_eid,
+					alive: true,
+					ev: EntityVersion {
+						eid: p.ev.eid,
+						vid: vid,
+						vtime: vtime
+					}
+				})
 			}
 			_ => {
 				self.prepare("INSERT INTO project_entity VALUES (NULL)")?.execute(&[])?;
@@ -125,7 +136,7 @@ impl ProjectDataSource for rusqlite::Connection {
 				};
 
 				let t = format!("{:?}", when.unwrap_or(time::get_time()));
-				stmt.query_row(&[&a, &t], |row| {
+				let x = stmt.query_map(&[&a, &t], |row| {
 					Some(Project {
 						remote_id: row.get(0),
 						name: row.get(1),
@@ -137,7 +148,8 @@ impl ProjectDataSource for rusqlite::Connection {
 							vtime: row.get(6)
 						}
 					})
-				})
+				})?.next().unwrap_or(Ok(None));
+				x
 			}
 		}
 	}
