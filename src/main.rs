@@ -66,6 +66,7 @@ pub trait ProjectDataSource {
 	fn upsert(&self, name: String, remote_id: RemoteId, parent_eid: Option<DbId>) -> Result<Project, Error>;
 	fn get(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Option<Project>, rusqlite::Error>;
 	fn list(&self, when: Option<Timespec>) -> Result<Vec<Project>, Error>;
+	fn parents(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Vec<Project>, Error>;
 }
 
 impl ProjectDataSource for rusqlite::Connection {
@@ -123,7 +124,8 @@ impl ProjectDataSource for rusqlite::Connection {
 					ProjectRef::Obj(_) => { panic!("Impossible") }
 				};
 
-				stmt.query_row(&[&a], |row| {
+				let t = format!("{:?}", when.unwrap_or(time::get_time()));
+				stmt.query_row(&[&a, &t], |row| {
 					Some(Project {
 						remote_id: row.get(0),
 						name: row.get(1),
@@ -160,6 +162,24 @@ impl ProjectDataSource for rusqlite::Connection {
 			}
 		})?.map(|x| x.unwrap()).collect();
 		Ok(out)
+	}
+	fn parents(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Vec<Project>, Error> {
+		let mut cur = self.get(proj, when)?;
+		let mut output = Vec::new();
+		while cur.is_some() {
+			let p = cur.unwrap();
+			match p.parent_eid {
+				Some(eid) => {
+					cur = self.get(ProjectRef::EId(eid), when)?
+				}
+				_ => {
+					cur = None
+				}
+			}
+			output.push(p);
+		}
+		output.reverse();
+		Ok(output)
 	}
 }
 
@@ -314,7 +334,10 @@ fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 		}
 		("projects", Some(_)) => {
 			for p in s.conn().list(None)? {
-				println!("{}", p.name);
+				//println!("{}", s.conn().parents(ProjectRef::Obj(p), None)?.iter().fold("".to_string(), |a, s| a + &s.name + " > "));
+				let parents = s.conn().parents(ProjectRef::Obj(p), None)?;
+				let names: Vec<String> = parents.iter().map(|x| x.name.clone()).collect();
+				println!("{}", names.join(" > "));
 			}
 		}
 		_ => {
