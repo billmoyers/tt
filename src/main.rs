@@ -36,13 +36,14 @@ pub struct Project {
 	alive: bool,
 	ev: EntityVersion
 }
+#[derive(Debug)]
 pub enum ProjectRef {
 	EV(EntityVersion),
 	EId(DbId),
 	RemoteId(RemoteId),
 	Obj(Project)
 }
-static SQL_0: [&'static str; 2] = ["
+static SQL_0_0: [&'static str; 2] = ["
 	CREATE TABLE project_entity (
 		id INTEGER PRIMARY KEY
 	);
@@ -196,14 +197,161 @@ impl ProjectDataSource for rusqlite::Connection {
 }
 
 #[derive(Debug)]
-struct Timeblock {
+pub struct Timeblock {
 	remote_id: Option<RemoteId>,
-	project_eid: Option<DbId>,
+	project: ProjectRef,
 	start: Timespec,
 	end: Option<Timespec>,
+	billable: bool,
+	notes: String,
+	tags: Vec<String>,
 	alive: bool,
 	ev: EntityVersion
 }
+#[derive(Debug)]
+pub enum TimeblockRef {
+	EV(EntityVersion),
+	EId(DbId),
+	RemoteId(RemoteId),
+	Obj(Timeblock)
+}
+static SQL_0_1: [&'static str; 2] = ["
+	CREATE TABLE timeblock_entity (
+		id INTEGER PRIMARY KEY,
+		last_sync_vid INTEGER DEFAULT NULL,
+		last_sync_time TIMESTAMP DEFAULT NULL
+	);
+","
+	CREATE TABLE timeblock (
+		remote_id TEXT DEFAULT NULL,
+		project_eid TEXT NOT NULL REFERENCES project_entity(id),
+		start TIMESTAMP NOT NULL,
+		end TIMESTAMP DEFAULT NULL,
+		billable BOOLEAN,
+		notes TEXT NOT NULL DEFAULT '',
+		tags TEXT NOT NULL DEFAULT '',
+		alive BOOLEAN DEFAULT 1,
+		
+		eid INTEGER NOT NULL REFERENCES timeblock_entity(id),
+		vid INTEGER NOT NULL,
+		vtime TIMESTAMP NOT NULL,
+
+		CHECK (remote_id IS NULL OR end IS NOT NULL)
+		UNIQUE (eid, vid),
+		UNIQUE (eid, remote_id)
+	);
+"];
+pub trait TimeblockDataSource {
+	fn tbupsert(&self, tb: Option<TimeblockRef>, remote_id: Option<RemoteId>, project: ProjectRef, start: Timespec, end: Option<Timespec>, billable: bool, notes: String, tags: Vec<String>, alive: bool) -> Result<Timeblock, Error>;
+	fn tbget(&self, tb: TimeblockRef, when: Option<Timespec>) -> Result<Option<Timeblock>, rusqlite::Error>;
+//	fn list(&self, when: Option<Timespec>) -> Result<Vec<Project>, Error>;
+//	fn parents(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Vec<Project>, Error>;
+}
+
+impl TimeblockDataSource for rusqlite::Connection {
+	fn tbupsert(&self, tb: Option<TimeblockRef>, remote_id: Option<RemoteId>, project: ProjectRef, start: Timespec, end: Option<Timespec>, billable: bool, notes: String, tags: Vec<String>, alive: bool) -> Result<Timeblock, Error> {
+		let proj = self.get(project, None)?.unwrap();
+		let g = match tb {
+			Some(tb) => { self.tbget(tb, None)? }
+			None => None
+		};
+		match g {
+			Some(tb) => {
+				let vtime = time::get_time();
+				let vid = tb.ev.vid+1;
+				let t = tags.join("\n").to_string();
+				self.prepare("INSERT INTO timeblock (remote_id, project_eid, start, end, billable, notes, tags, alive, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?")?.execute(&[&remote_id, &proj.ev.eid, &start, &end, &billable, &notes, &t, &alive, &tb.ev.eid, &vid, &vtime])?;
+				Ok(Timeblock {
+					remote_id: remote_id,
+					project: ProjectRef::EId(proj.ev.eid),
+					start: start,
+					end: end,
+					billable: billable,
+					notes: notes,
+					tags: tags,
+					alive: alive,
+					ev: EntityVersion {
+						eid: tb.ev.eid,
+						vid: vid,
+						vtime: vtime
+					}
+				})
+			}
+			_ => {
+				self.prepare("INSERT INTO timeblock_entity VALUES (NULL, NULL, NULL)")?.execute(&[])?;
+				let eid: DbId = self.last_insert_rowid();
+				let vtime = time::get_time();
+				let vid = 0;
+				let t = tags.join("\n").to_string();
+				self.prepare("INSERT INTO timeblock (remote_id, project_eid, start, end, billable, notes, tags, alive, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &proj.ev.eid, &start, &end, &billable, &notes, &t, &alive, &eid, &vid, &vtime])?;
+				Ok(Timeblock {
+					remote_id: remote_id,
+					project: ProjectRef::EId(proj.ev.eid),
+					start: start,
+					end: end,
+					billable: billable,
+					notes: notes,
+					tags: tags,
+					alive: alive,
+					ev: EntityVersion {
+						eid: eid,
+						vid: vid,
+						vtime: vtime
+					}
+				})
+			}
+		}
+	}
+
+	fn tbget(&self, tb: TimeblockRef, when: Option<Timespec>) -> Result<Option<Timeblock>, rusqlite::Error> {
+		match tb {
+			TimeblockRef::Obj(tb) => {
+				Ok(Some(tb))
+			}
+			_ => {
+				let mut stmt = match tb {
+					TimeblockRef::EV(_) => {
+						self.prepare("SELECT p.* FROM timeblock AS p WHERE p.eid=? AND p.vid IN (SELECT MAX(vid) FROM timeblock AS p2 WHERE p2.eid=p.eid AND p2.vtime <= ?) LIMIT 1")?
+					}
+					TimeblockRef::EId(_) => {
+						self.prepare("SELECT p.* FROM timeblock AS p WHERE p.eid=? AND p.vid IN (SELECT MAX(vid) FROM timeblock AS p2 WHERE p2.eid=p.eid AND p2.vtime <= ?) LIMIT 1")?
+					}
+					TimeblockRef::RemoteId(_) => {
+						self.prepare("SELECT p.* FROM timeblock AS p WHERE p.remote_id=? AND p.vid IN (SELECT MAX(vid) FROM timeblock AS p2 WHERE p2.eid=p.eid AND p2.vtime <= ?) LIMIT 1")?
+					}
+					TimeblockRef::Obj(_) => {
+						panic!("Impossible")
+					}
+				};
+				let a = match tb {
+					TimeblockRef::EV(ev) => { format!("{}", ev.eid) }
+					TimeblockRef::EId(eid) => { format!("{}", eid) }
+					TimeblockRef::RemoteId(remote_id) => { remote_id.clone() }
+					TimeblockRef::Obj(_) => { panic!("Impossible") }
+				};
+
+				let t = format!("{:?}", when.unwrap_or(time::get_time()));
+				let x = stmt.query_map(&[&a, &t], |row| {
+					Some(Timeblock {
+						remote_id: row.get(0),
+						project: ProjectRef::EId(row.get(1)),
+						start: row.get(2),
+						end: row.get(3),
+						billable: row.get(4),
+						notes: row.get(5),
+						tags: vec![row.get(6)],
+						alive: row.get(7),
+						ev: EntityVersion {
+							eid: row.get(8),
+							vid: row.get(9),
+							vtime: row.get(10)
+						}
+					})
+				})?.next().unwrap_or(Ok(None));
+				x
+			}
+		}
+	}}
 
 #[derive(Debug)]
 pub enum Error {
@@ -243,12 +391,7 @@ trait TimeTracker {
 //	fn delete(conn: &Connection, proj: Project) -> Result<Project, Error>;
 
 	fn punchin(&self, proj: &Project) -> Result<(), Error> {
-		/*Ok(Timeblock {
-			remote_id: None,
-			project_id: proj.id.clone(),
-			start: time::get_time(),
-			end: None
-		})*/
+		self.conn().tbupsert(None, None, ProjectRef::EId(proj.ev.eid), time::get_time(), None, false, "".to_string(), vec![], true)?;
 		Ok(())
 	}
 }
@@ -287,35 +430,10 @@ fn upgrade(conn: &Connection, vto: i32) -> Result<i32, rusqlite::Error> {
 				conn.execute("
 					INSERT INTO metadata (version) VALUES (0);
 				", &[])?;
-				conn.execute(SQL_0[0], &[])?;
-				conn.execute(SQL_0[1], &[])?;
-				conn.execute("
-					CREATE TABLE timeblock_entity (
-						id INTEGER PRIMARY KEY,
-						last_sync_vid INTEGER,
-						last_sync_time TIMESTAMP
-					);
-				", &[])?;
-				conn.execute("
-					CREATE TABLE timeblock (
-						remote_id TEXT DEFAULT NULL,
-						project_eid TEXT NOT NULL REFERENCES project_entity(id),
-						start TIMESTAMP NOT NULL,
-						end TIMESTAMP DEFAULT NULL,
-						billable BOOLEAN,
-						notes TEXT NOT NULL DEFAULT '',
-						tags TEXT NOT NULL DEFAULT '',
-						alive BOOLEAN DEFAULT 1,
-						
-						eid INTEGER NOT NULL REFERENCES timeblock_entity(id),
-						vid INTEGER NOT NULL,
-						vtime TIMESTAMP NOT NULL,
-
-						CHECK (remote_id IS NULL OR end IS NOT NULL)
-						UNIQUE (eid, vid),
-						UNIQUE (eid, remote_id)
-					);
-				", &[])?;
+				conn.execute(SQL_0_0[0], &[])?;
+				conn.execute(SQL_0_0[1], &[])?;
+				conn.execute(SQL_0_1[0], &[])?;
+				conn.execute(SQL_0_1[1], &[])?;
 			}
 			_ => {
 			}
