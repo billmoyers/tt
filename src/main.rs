@@ -378,17 +378,12 @@ impl std::convert::From<hyper::Error> for Error {
 }
 
 trait TimeTracker {
-	//fn punchin(&self, proj: &Project) -> Result<(), Error>;
 	//fn punchout(&self, tb: Timeblock) -> Result<Timeblock, Error>;
 
 	fn conn(&self) -> &Connection;
 
 	fn down(&self) -> Result<(), Error>;
 	fn up(&self) -> Result<(), Error>;
-
-//	fn get(conn: &Connection, eid: DbId) -> Result<Option<Project>, Error>;
-//	fn update(conn: &Connection, proj: Project) -> Result<Project, Error>;
-//	fn delete(conn: &Connection, proj: Project) -> Result<Project, Error>;
 
 	fn punchin(&self, proj: &Project) -> Result<(), Error> {
 		self.conn().tbupsert(None, None, ProjectRef::EId(proj.ev.eid), time::get_time(), None, false, "".to_string(), vec![], true)?;
@@ -464,10 +459,10 @@ fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 		}
 		("projects", Some(_)) => {
 			for p in s.conn().list(None)? {
-				//println!("{}", s.conn().parents(ProjectRef::Obj(p), None)?.iter().fold("".to_string(), |a, s| a + &s.name + " > "));
+				let remote_id = p.remote_id.clone();
 				let parents = s.conn().parents(ProjectRef::Obj(p), None)?;
 				let names: Vec<String> = parents.iter().map(|x| x.name.clone()).collect();
-				println!("{}", names.join(" > "));
+				println!("{}: {}", remote_id, names.join(" > "));
 			}
 		}
 		_ => {
@@ -482,13 +477,23 @@ fn main2() -> Result<(), Error> {
     let m = cli::build_cli().get_matches();
 			
 	//TODO Handle --db option here.
-	let home_dir = std::env::home_dir().unwrap();
-	let mut path = std::path::PathBuf::from(home_dir);
-	path.push("/src/.tt.sqlite");
-	let conn = Connection::open(path.as_path())?;
+	let search = vec![std::env::home_dir().unwrap(), std::env::current_dir().unwrap()];
+	let mut conn: Option<Connection> = None;
+	for dir in search {
+		let mut path = std::path::PathBuf::from(dir);
+		path.push(".tt.sqlite");
+		conn = match Connection::open(path.as_path()) {
+			Ok(c) => { Some(c) }
+			_ => { None }
+		};
+		if conn.is_some() {
+			break
+		}
+	}
 	//TODO Handle choosing the sub-system
-	upgrade(&conn, 0)?;
-	let t = teamwork::Teamwork::new(&conn)?;
+	let c = &conn.unwrap();
+	upgrade(c, 0)?;
+	let t = teamwork::Teamwork::new(c)?;
 	Ok(dispatch(&m, &t)?)
 }
 
