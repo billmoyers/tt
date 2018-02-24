@@ -21,14 +21,14 @@ use rusqlite::types::ToSql;
 type RemoteId = String;
 type DbId = i64;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EntityVersion {
 	eid: DbId,
 	vid: DbId,
 	vtime: Timespec
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Project {
 	remote_id: RemoteId,
 	name: String,
@@ -36,12 +36,12 @@ pub struct Project {
 	alive: bool,
 	ev: EntityVersion
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ProjectRef {
 	EV(EntityVersion),
 	EId(DbId),
 	RemoteId(RemoteId),
-	Obj(Project)
+	Obj(Project),
 }
 static SQL_0_0: [&'static str; 2] = ["
 	CREATE TABLE project_entity (
@@ -226,7 +226,7 @@ static SQL_0_1: [&'static str; 2] = ["
 ","
 	CREATE TABLE timeblock (
 		remote_id TEXT DEFAULT NULL,
-		project_eid TEXT NOT NULL REFERENCES project_entity(id),
+		project_eid INTEGER NOT NULL REFERENCES project_entity(id),
 		start TIMESTAMP NOT NULL,
 		end TIMESTAMP DEFAULT NULL,
 		billable BOOLEAN,
@@ -329,7 +329,7 @@ impl TimeblockDataSource for rusqlite::Connection {
 	fn search(&self, filter: Option<TimeblockFilter>) -> Result<Vec<Timeblock>, rusqlite::Error> {
 		let q = filter.unwrap_or(TimeblockFilter::AtTime(time::get_time()));
 		let (where_clause, args) = q.where_clause();
-		let sql = format!("SELECT tb.* FROM timeblock AS tb WHERE tb.vid IN (SELECT MAX(vid) FROM timeblock AS tb2 WHERE tb2.eid=tb.eid) INNER JOIN project AS p ON p.eid=tb.project_eid AND {}", where_clause);
+		let sql = format!("SELECT tb.* FROM timeblock AS tb INNER JOIN project AS p ON p.eid=tb.project_eid WHERE tb.vid IN (SELECT MAX(vid) FROM timeblock AS tb2 WHERE tb2.eid=tb.eid) AND {}", where_clause);
 
 		let a = args.as_slice();
 		let mut stmt = self.prepare(sql.as_str())?;
@@ -366,7 +366,7 @@ impl TimeblockDataSource for rusqlite::Connection {
 				let vtime = time::get_time();
 				let vid = tb.ev.vid+1;
 				let t = tags.join("\n").to_string();
-				self.prepare("INSERT INTO timeblock (remote_id, project_eid, start, end, billable, notes, tags, alive, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?")?.execute(&[&remote_id, &proj.ev.eid, &start, &end, &billable, &notes, &t, &alive, &tb.ev.eid, &vid, &vtime])?;
+				self.prepare("INSERT INTO timeblock (remote_id, project_eid, start, end, billable, notes, tags, alive, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &proj.ev.eid, &start, &end, &billable, &notes, &t, &alive, &tb.ev.eid, &vid, &vtime])?;
 				Ok(Timeblock {
 					remote_id: remote_id,
 					project: ProjectRef::EId(proj.ev.eid),
@@ -499,10 +499,28 @@ trait TimeTracker {
 	fn punchout(&self, proj: Option<&Project>) -> Result<(), Error> {
 		let t: &TimeblockDataSource = self.conn();
 		let p: &ProjectDataSource = self.conn();
+		
+		let s = t.search(Some(TimeblockFilter::Open(true)))?;
 
-//		t.search(TimeblockFilter::Open(true)).filter(|tb| tb.project == 
+		let tb = match proj {
+			Some(proj) => {
+				s.iter().filter(|ref tb| p.get(tb.project.clone(), None).unwrap().unwrap().ev.eid == proj.ev.eid).next()
+			}
+			_ => {
+				s.iter().next()
+			}
+		};
 
-		Ok(())
+		match tb {
+			Some(ref tb) => {
+				let pr = ProjectRef::EId(p.get(tb.project.clone(), None)?.unwrap().ev.eid);
+				t.upsert(Some(TimeblockRef::EId(tb.ev.eid)), tb.remote_id.clone(), pr, tb.start, Some(time::get_time()), tb.billable, tb.notes.clone(), tb.tags.clone(), tb.alive)?;
+				Ok(())
+			}
+			_ => {
+				Err(Error::TTError("No timeblock".to_string()))
+			}
+		}
 	}
 }
 
