@@ -14,7 +14,10 @@ extern crate futures;
 mod cli;
 mod teamwork;
 
-use time::Timespec;
+use time::{
+	Timespec,
+	Duration
+};
 use rusqlite::Connection;
 use rusqlite::types::ToSql;
 
@@ -67,6 +70,7 @@ pub trait ProjectDataSource {
 	fn get(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Option<Project>, rusqlite::Error>;
 	fn list(&self, when: Option<Timespec>) -> Result<Vec<Project>, Error>;
 	fn parents(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Vec<Project>, Error>;
+	fn fqn(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<String, Error>;
 }
 
 impl ProjectDataSource for rusqlite::Connection {
@@ -195,6 +199,11 @@ impl ProjectDataSource for rusqlite::Connection {
 		}
 		output.reverse();
 		Ok(output)
+	}
+	fn fqn(&self, p: ProjectRef, when: Option<Timespec>) -> Result<String, Error> {
+		let parents = self.parents(p, None)?;
+		let names: Vec<String> = parents.iter().map(|x| str::replace(x.name.as_str(), "/", "\\/").clone()).collect();
+		Ok(names.join("/"))
 	}
 }
 
@@ -465,6 +474,7 @@ pub enum Error {
 	RusqliteError(rusqlite::Error),
 	IOError(std::io::Error),
 	HyperError(hyper::Error),
+	SerdeError(serde_json::Error),
 	TTError(String)
 }
 
@@ -483,9 +493,23 @@ impl std::convert::From<hyper::Error> for Error {
 		Error::HyperError(e)
 	}
 }
+impl std::convert::From<serde_json::Error> for Error {
+	fn from(e: serde_json::Error) -> Error {
+		Error::SerdeError(e)
+	}
+}
 
 trait TimeTracker {
 	fn conn(&self) -> &Connection;
+	
+	fn status(&self) -> Result<Vec<(String, Duration)>, Error> {
+		let t: &TimeblockDataSource = self.conn();
+		let p: &ProjectDataSource = self.conn();
+		let s = t.search(Some(TimeblockFilter::Open(true)))?;
+		s.iter().map(|tb| {
+			(p.get(tb.project, None).unwrap(), time::get_time() - tb.start)
+		}).collect()
+	}
 
 	fn down(&self) -> Result<(), Error>;
 	fn up(&self) -> Result<(), Error>;
@@ -499,7 +523,6 @@ trait TimeTracker {
 	fn punchout(&self, proj: Option<&Project>) -> Result<(), Error> {
 		let t: &TimeblockDataSource = self.conn();
 		let p: &ProjectDataSource = self.conn();
-		
 		let s = t.search(Some(TimeblockFilter::Open(true)))?;
 
 		let tb = match proj {
@@ -580,15 +603,18 @@ fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 		("down", Some(_)) => {
 			s.down()?;
 		}
+		("status", Some(_)) => {
+			println!("{:?}", serde_json::to_string(&s.status()?));
+		}
 		("punchin", Some(punchin_matches)) => {
 			let name = punchin_matches.value_of("project").unwrap();
 			let projects = s.conn().list(None)?;
 			let index = projects.iter().position(|p| {
-				p.name == name || p.remote_id == name
+				s.conn().fqn(ProjectRef::EId(p.ev.eid), None).unwrap() == name
 			}).unwrap();
 			let mut proj = projects.get(index).unwrap();
 			let t = s.punchin(proj)?;
-			println!("{:?}", t);
+			println!("{}", serde_json::to_string_pretty(&t)?);
 		}
 		("punchout", Some(punchout_matches)) => {
 			let name = punchout_matches.value_of("project");
@@ -596,22 +622,21 @@ fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 			let proj = match name {
 				Some(name) => {
 					let index = projects.iter().position(|p| {
-						p.name == name || p.remote_id == name
+						s.conn().fqn(ProjectRef::EId(p.ev.eid), None).unwrap() == name
 					}).unwrap();
 					projects.get(index)
 				}
 				_ => None
 			};
 			let t = s.punchout(proj)?;
-			println!("{:?}", t);
+			println!("{}", serde_json::to_string_pretty(&t)?);
 		}
 		("projects", Some(_)) => {
-			for p in s.conn().list(None)? {
+			let ls: Vec<String> = s.conn().list(None)?.iter().map(|p| {
 				let remote_id = p.remote_id.clone();
-				let parents = s.conn().parents(ProjectRef::Obj(p), None)?;
-				let names: Vec<String> = parents.iter().map(|x| x.name.clone()).collect();
-				println!("{}: {}", remote_id, names.join(" > "));
-			}
+				s.conn().fqn(ProjectRef::Obj(p.clone()), None).unwrap()
+			}).collect();
+			println!("{}", serde_json::to_string_pretty(&ls)?);
 		}
 		_ => {
 			Error::TTError("No commands specified.".to_string());

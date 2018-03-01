@@ -6,6 +6,8 @@ pub fn build_cli() -> App<'static, 'static> {
 		)
 		.subcommand(SubCommand::with_name("projects")
 		)
+		.subcommand(SubCommand::with_name("status")
+		)
 		.subcommand(SubCommand::with_name("punchin")
 			.arg(Arg::with_name("project")
 				.required(true)
