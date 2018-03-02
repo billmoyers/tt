@@ -7,6 +7,7 @@ extern crate hyper_tls;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde;
+#[macro_use]
 extern crate serde_json;
 extern crate tokio_core;
 extern crate futures;
@@ -499,16 +500,22 @@ impl std::convert::From<serde_json::Error> for Error {
 	}
 }
 
+pub struct Status {
+	open: Vec<(Project, Duration)>
+}
+
 trait TimeTracker {
 	fn conn(&self) -> &Connection;
 	
-	fn status(&self) -> Result<Vec<(String, Duration)>, Error> {
+	fn status(&self) -> Result<Status, Error> {
 		let t: &TimeblockDataSource = self.conn();
 		let p: &ProjectDataSource = self.conn();
 		let s = t.search(Some(TimeblockFilter::Open(true)))?;
-		s.iter().map(|tb| {
-			(p.get(tb.project, None).unwrap(), time::get_time() - tb.start)
-		}).collect()
+		Ok(Status {
+			open: s.iter().map(|tb| {
+				(p.get(tb.project.clone(), None).unwrap().unwrap(), time::get_time() - tb.start)
+			}).collect()
+		})
 	}
 
 	fn down(&self) -> Result<(), Error>;
@@ -604,7 +611,16 @@ fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 			s.down()?;
 		}
 		("status", Some(_)) => {
-			println!("{:?}", serde_json::to_string(&s.status()?));
+			let d: Vec<Vec<String>> = s.status()?.open.iter().map(|&(ref p, d)| {
+				let mut sr = d.num_seconds();
+				let h = (sr/60)/60;
+				sr -= h*60*60;
+				let m = (sr)/60;
+				sr -= m*60;
+				let ds = format!("{:>02}:{:>02}:{:>02}", h, m, sr);
+				vec![s.conn().fqn(ProjectRef::EId(p.ev.eid), None).unwrap(), ds]
+			}).collect();
+			println!("{}", serde_json::to_string(&json!({"open": d}))?);
 		}
 		("punchin", Some(punchin_matches)) => {
 			let name = punchin_matches.value_of("project").unwrap();
