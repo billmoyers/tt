@@ -33,6 +33,9 @@ pub struct Teamwork<'a> {
 	base_url: String
 }
 
+header! { (XPage, "X-Page") => [i16] }
+header! { (XPages, "X-Pages") => [i16] }
+
 impl<'a> TimeTracker for Teamwork<'a> {
 	fn conn(&self) -> &Connection {
 		self.conn
@@ -60,7 +63,6 @@ impl<'a> TimeTracker for Teamwork<'a> {
 				}
 			}
 
-
 			#[derive(Deserialize, Debug)]
 			struct TeamworkProjectsResult {
 				#[serde(rename="STATUS")]
@@ -78,7 +80,12 @@ impl<'a> TimeTracker for Teamwork<'a> {
 
 		twprojects.into_iter().map(|p|{
 			let n = p.name.clone();
-			let pp = self.conn.upsert(n, p.pid(), None).unwrap();
+			let pp = match self.conn.upsert(n, p.pid(), None) {
+				Ok(p) => { p }
+				Err(e) => {
+					panic!("{:?}", e);
+				}
+			};
 
 			let req = self.get(format!("/projects/{}/tasks.json", p.id).to_string()).unwrap();
 			let work = client.request(req).and_then(|res| {
@@ -114,6 +121,54 @@ impl<'a> TimeTracker for Teamwork<'a> {
 			});
 			core.run(work).unwrap();
 		}).collect::<()>();
+		
+
+		let mut page = 1;
+		let mut num_pages = 1;
+
+		while page <= num_pages {
+			eprintln!("Teamwork.down: get time entries page {}/{}...", page, num_pages);
+
+			let req = self.get(format!("/time_entries.json?page={}", page).to_string())?;
+
+			let work = client.request(req).and_then(|mut res| {
+				assert_eq!(res.status(), hyper::Ok);
+
+				let h = res.headers_mut().clone();
+				num_pages = match h.get::<XPages>().unwrap() {
+					&XPages(i) => { i }
+				};
+
+				#[derive(Deserialize, Debug)]
+				struct TeamworkTimeEntry {
+					id: String,
+					#[serde(rename="project-id")]
+					project_id: String,
+					minutes: String,
+					isbillable: String,
+					date: String,
+					hours: String,
+				}
+
+				#[derive(Deserialize, Debug)]
+				struct TeamworkTimeEntriesResult {
+					#[serde(rename="STATUS")]
+					status: String,
+					#[serde(rename="time-entries")]
+					entries: Vec<TeamworkTimeEntry>
+				}
+
+				Teamwork::body(res).and_then(|s| {
+					let r = serde_json::from_str::<TeamworkTimeEntriesResult>(&s).unwrap();
+					let x = r.entries.into_iter().map(|e| {
+						println!("{:?}", e);
+					});
+					stream::iter_ok::<_, hyper::Error>(x).collect()
+				})
+			});
+			core.run(work).unwrap();
+			page = page+1;
+		}
 
 		Ok(())
 	}

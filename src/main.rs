@@ -2,6 +2,7 @@ extern crate rusqlite;
 extern crate time;
 extern crate clap;
 extern crate rpassword;
+#[macro_use]
 extern crate hyper;
 extern crate hyper_tls;
 #[macro_use]
