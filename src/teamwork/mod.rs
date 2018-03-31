@@ -18,6 +18,9 @@ use super::{ TimeTracker, Project, Error };
 use super::std;
 use super::hyper;
 use super::serde_json;
+use super::serde_json::{ Value };
+use super::time;
+use super::time::{ Duration };
 
 use super::hyper_tls;
 use super::tokio_core;
@@ -26,6 +29,7 @@ use futures::future;
 use futures::stream;
 
 use super::ProjectDataSource;
+use super::TimeblockDataSource;
 
 pub struct Teamwork<'a> {
 	conn: &'a Connection,
@@ -41,6 +45,9 @@ impl<'a> TimeTracker for Teamwork<'a> {
 		self.conn
 	}
 	fn down(&self) -> Result<(), Error> {
+		let psrc: &ProjectDataSource = self.conn;
+		let tsrc: &TimeblockDataSource = self.conn;
+
 		let mut core = tokio_core::reactor::Core::new().unwrap();
 		let handle = core.handle();
 		let client = hyper::Client::configure()
@@ -80,7 +87,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 
 		twprojects.into_iter().map(|p|{
 			let n = p.name.clone();
-			let pp = match self.conn.upsert(n, p.pid(), None) {
+			let pp = match psrc.upsert(n, p.pid(), None) {
 				Ok(p) => { p }
 				Err(e) => {
 					panic!("{:?}", e);
@@ -114,7 +121,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 					let r = serde_json::from_str::<TeamworkTasksResult>(&s).unwrap();
 					let x = r.tasks.into_iter().map(|t| {
 						let n = t.name.clone();
-						self.conn.upsert(n, t.pid(), Some(pp.ev.eid))
+						psrc.upsert(n, t.pid(), Some(pp.ev.eid))
 					});
 					stream::iter_ok::<_, hyper::Error>(x).collect()
 				})
@@ -144,10 +151,12 @@ impl<'a> TimeTracker for Teamwork<'a> {
 					id: String,
 					#[serde(rename="project-id")]
 					project_id: String,
-					minutes: String,
+					#[serde(rename="todo-item-id")]
+					task_id: String,
+					minutes: serde_json::value::Value,
 					isbillable: String,
 					date: String,
-					hours: String,
+					hours: serde_json::value::Value,
 				}
 
 				#[derive(Deserialize, Debug)]
@@ -161,7 +170,36 @@ impl<'a> TimeTracker for Teamwork<'a> {
 				Teamwork::body(res).and_then(|s| {
 					let r = serde_json::from_str::<TeamworkTimeEntriesResult>(&s).unwrap();
 					let x = r.entries.into_iter().map(|e| {
-						println!("{:?}", e);
+						//2016-01-01T06:17:00Z
+						let start = super::time::strptime(&e.date, "%Y-%m-%dT%H:%M:%S%z").unwrap().to_timespec();
+						let end = match (e.hours, e.minutes) {
+							(Value::Number(h), Value::Number(m)) => {
+								Some(start + Duration::hours(h.as_i64().unwrap()) + Duration::minutes(m.as_i64().unwrap()))
+							}
+							_ => {
+								None
+							}
+						};
+						let mut billable = false;
+						if e.isbillable == "True" {
+							billable = true;
+						}
+						let pref = if (e.task_id == "") {
+							super::ProjectRef::RemoteId(format!("/tasks/{}", e.task_id))
+						} else {
+							super::ProjectRef::RemoteId(format!("/projects/{}", e.project_id))
+						};
+						let tb = tsrc.upsert(
+							None,
+							Some(e.id),
+							pref,
+							start,
+							end,
+							billable,
+							"".to_string(),
+							vec![],
+							true
+						);
 					});
 					stream::iter_ok::<_, hyper::Error>(x).collect()
 				})
