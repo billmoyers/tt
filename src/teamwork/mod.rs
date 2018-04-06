@@ -54,84 +54,91 @@ impl<'a> TimeTracker for Teamwork<'a> {
 			.connector(hyper_tls::HttpsConnector::new(4, &handle).unwrap())
 			.build(&handle);
 
-		let req = self.get("/projects.json".to_string())?;
+		let mut page = 1;
+		let mut num_pages = 1;
 
-		let work = client.request(req).and_then(|res| {
-			assert_eq!(res.status(), hyper::Ok);
+		while page <= num_pages {
+			eprintln!("Teamwork.down: get project entries page {}/{}...", page, num_pages);
 
-			#[derive(Deserialize, Debug)]
-			struct TeamworkProject {
-				id: String,
-				name: String
-			}
-			impl TeamworkProject {
-				fn pid(&self) -> String {
-					format!("/projects/{}", self.id)
-				}
-			}
+			let req = self.get(format!("/projects.json?page={}", page).to_string())?;
 
-			#[derive(Deserialize, Debug)]
-			struct TeamworkProjectsResult {
-				#[serde(rename="STATUS")]
-				status: String,
-				projects: Vec<TeamworkProject>
-			}
-
-			Teamwork::body(res).and_then(|s| {
-				let r = serde_json::from_str::<TeamworkProjectsResult>(&s).unwrap();
-				let x = r.projects.into_iter();
-				stream::iter_ok::<_, hyper::Error>(x).collect()
-			})
-		});
-		let twprojects = core.run(work).unwrap();
-
-		twprojects.into_iter().map(|p|{
-			let n = p.name.clone();
-			let pp = match psrc.upsert(n, p.pid(), None) {
-				Ok(p) => { p }
-				Err(e) => {
-					panic!("{:?}", e);
-				}
-			};
-
-			let req = self.get(format!("/projects/{}/tasks.json", p.id).to_string()).unwrap();
 			let work = client.request(req).and_then(|res| {
 				assert_eq!(res.status(), hyper::Ok);
-				Teamwork::body(res).and_then(|s|{
-					#[derive(Deserialize, Debug)]
-					struct TeamworkTask {
-						id: serde_json::Value,
-						#[serde(rename="content")]
-						name: String
-					}
-					impl TeamworkTask {
-						fn pid(&self) -> String {
-							format!("/tasks/{}", self.id)
-						}
-					}
 
-					#[derive(Deserialize, Debug)]
-					struct TeamworkTasksResult {
-						#[serde(rename="STATUS")]
-						status: String,
-						#[serde(rename="todo-items")]
-						tasks: Vec<TeamworkTask>
+				#[derive(Deserialize, Debug)]
+				struct TeamworkProject {
+					id: String,
+					name: String
+				}
+				impl TeamworkProject {
+					fn pid(&self) -> String {
+						format!("/projects/{}", self.id)
 					}
+				}
 
-					let r = serde_json::from_str::<TeamworkTasksResult>(&s).unwrap();
-					let x = r.tasks.into_iter().map(|t| {
-						let n = t.name.clone();
-						psrc.upsert(n, t.pid(), Some(pp.ev.eid))
-					});
+				#[derive(Deserialize, Debug)]
+				struct TeamworkProjectsResult {
+					#[serde(rename="STATUS")]
+					status: String,
+					projects: Vec<TeamworkProject>
+				}
+
+				Teamwork::body(res).and_then(|s| {
+					let r = serde_json::from_str::<TeamworkProjectsResult>(&s).unwrap();
+					let x = r.projects.into_iter();
 					stream::iter_ok::<_, hyper::Error>(x).collect()
 				})
 			});
-			core.run(work).unwrap();
-		}).collect::<()>();
-		
+			let twprojects = core.run(work).unwrap();
 
-		let mut page = 1;
-		let mut num_pages = 1;
+			twprojects.into_iter().map(|p|{
+				let n = p.name.clone();
+				let pp = match psrc.upsert(n, p.pid(), None) {
+					Ok(p) => { p }
+					Err(e) => {
+						panic!("{:?}", e);
+					}
+				};
+
+				let req = self.get(format!("/projects/{}/tasks.json", p.id).to_string()).unwrap();
+				let work = client.request(req).and_then(|res| {
+					assert_eq!(res.status(), hyper::Ok);
+					Teamwork::body(res).and_then(|s|{
+						#[derive(Deserialize, Debug)]
+						struct TeamworkTask {
+							id: serde_json::Value,
+							#[serde(rename="content")]
+							name: String
+						}
+						impl TeamworkTask {
+							fn pid(&self) -> String {
+								format!("/tasks/{}", self.id)
+							}
+						}
+
+						#[derive(Deserialize, Debug)]
+						struct TeamworkTasksResult {
+							#[serde(rename="STATUS")]
+							status: String,
+							#[serde(rename="todo-items")]
+							tasks: Vec<TeamworkTask>
+						}
+
+						let r = serde_json::from_str::<TeamworkTasksResult>(&s).unwrap();
+						let x = r.tasks.into_iter().map(|t| {
+							let n = t.name.clone();
+							psrc.upsert(n, t.pid(), Some(pp.ev.eid))
+						});
+						stream::iter_ok::<_, hyper::Error>(x).collect()
+					})
+				});
+				core.run(work).unwrap();
+			}).collect::<()>();
+			page = page+1;
+		}
+		
+		page = 1;
+		num_pages = 1;
 
 		while page <= num_pages {
 			eprintln!("Teamwork.down: get time entries page {}/{}...", page, num_pages);
@@ -184,7 +191,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 						if e.isbillable == "True" {
 							billable = true;
 						}
-						let pref = if (e.task_id == "") {
+						let pref = if (e.task_id != "") {
 							super::ProjectRef::RemoteId(format!("/tasks/{}", e.task_id))
 						} else {
 							super::ProjectRef::RemoteId(format!("/projects/{}", e.project_id))
