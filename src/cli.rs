@@ -1,7 +1,7 @@
-use clap::{Arg, App, SubCommand};
+use clap::{Arg, App, SubCommand, AppSettings, Shell};
 
 pub fn build_cli() -> App<'static, 'static> {
-	App::new("TimeTracker")
+	App::new("tt")
 		.subcommand(SubCommand::with_name("down")
 		)
 		.subcommand(SubCommand::with_name("projects")
@@ -27,5 +27,9 @@ pub fn build_cli() -> App<'static, 'static> {
 			.help("Sets a custom config file")
 			.takes_value(true)
 		)
+		.subcommand(SubCommand::with_name("completions")
+			.about("Generate completion scripts for your shell")
+			.setting(AppSettings::ArgRequiredElseHelp)
+			.arg(Arg::with_name("shell").possible_values(&Shell::variants())))
 }
 

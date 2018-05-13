@@ -610,6 +610,10 @@ fn upgrade(conn: &Connection, vto: i32) -> Result<i32, rusqlite::Error> {
 
 fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 	match m.subcommand() {
+		("completions", Some(m)) => {
+			let mut app = cli::build_cli();
+			app.gen_completions("tt", m.value_of("shell").unwrap().parse::<clap::Shell>().unwrap(), ".");
+		}
 		("down", Some(_)) => {
 			s.down()?;
 		}
