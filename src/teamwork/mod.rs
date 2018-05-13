@@ -21,6 +21,11 @@ use super::serde_json;
 use super::serde_json::{ Value };
 use super::time;
 use super::time::{ Duration };
+use super::chrono;
+use super::chrono::{ 
+	DateTime,
+	Utc,
+};
 
 use super::hyper_tls;
 use super::tokio_core;
@@ -49,6 +54,15 @@ impl<'a> TimeTracker for Teamwork<'a> {
 		let psrc: &ProjectDataSource = self.conn;
 		let tsrc: &TimeblockDataSource = self.conn;
 
+		let last_sync = match tsrc.last_sync()? {
+			Some(t) => {
+				Some(time::strftime("Ymd", t)?)
+			}
+			_ => {
+				None
+			}
+		};
+
 		let mut core = tokio_core::reactor::Core::new().unwrap();
 		let handle = core.handle();
 		let client = hyper::Client::configure()
@@ -60,7 +74,14 @@ impl<'a> TimeTracker for Teamwork<'a> {
 
 		while page <= num_pages {
 			eprintln!("Teamwork.down: get project entries page {}/{}...", page, num_pages);
-			let req = self.get(format!("/projects.json?page={}", page).to_string())?;
+			let req = match last_sync {
+				Some(t) => {
+					self.get(format!("/projects.json?page={}&updatedAfterDate={}", page, t).to_string())?
+				}
+				_ => {
+					self.get(format!("/projects.json?page={}", page).to_string())?
+				}
+			};
 
 			let work = client.request(req).and_then(|res| {
 				assert_eq!(res.status(), hyper::Ok);
@@ -202,7 +223,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 						if e.isbillable == "True" {
 							billable = true;
 						}
-						let pref = if (e.task_id != "") {
+						let pref = if e.task_id != "" {
 							super::ProjectRef::RemoteId(format!("/tasks/{}", e.task_id))
 						} else {
 							super::ProjectRef::RemoteId(format!("/projects/{}", e.project_id))

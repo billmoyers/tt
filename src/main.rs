@@ -12,13 +12,17 @@ extern crate serde;
 extern crate serde_json;
 extern crate tokio_core;
 extern crate futures;
+extern crate chrono;
 
 mod cli;
 mod teamwork;
 
 use time::{
-	Timespec,
 	Duration
+};
+use chrono::{
+	DateTime,
+	Utc,
 };
 use rusqlite::Connection;
 use rusqlite::types::ToSql;
@@ -30,7 +34,7 @@ type DbId = i64;
 pub struct EntityVersion {
 	eid: DbId,
 	vid: DbId,
-	vtime: Timespec
+	vtime: DateTime<Utc>
 }
 
 #[derive(Debug, Clone)]
@@ -69,10 +73,10 @@ static SQL_0_0: [&'static str; 2] = ["
 ];
 pub trait ProjectDataSource {
 	fn upsert(&self, name: String, remote_id: RemoteId, parent_eid: Option<DbId>) -> Result<Project, Error>;
-	fn get(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Option<Project>, rusqlite::Error>;
-	fn list(&self, when: Option<Timespec>) -> Result<Vec<Project>, Error>;
-	fn parents(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Vec<Project>, Error>;
-	fn fqn(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<String, Error>;
+	fn get(&self, proj: ProjectRef, when: Option<DateTime<Utc>>) -> Result<Option<Project>, rusqlite::Error>;
+	fn list(&self, when: Option<DateTime<Utc>>) -> Result<Vec<Project>, Error>;
+	fn parents(&self, proj: ProjectRef, when: Option<DateTime<Utc>>) -> Result<Vec<Project>, Error>;
+	fn fqn(&self, proj: ProjectRef, when: Option<DateTime<Utc>>) -> Result<String, Error>;
 }
 
 impl ProjectDataSource for rusqlite::Connection {
@@ -80,9 +84,9 @@ impl ProjectDataSource for rusqlite::Connection {
 		let psrc: &ProjectDataSource = self;
 		match psrc.get(ProjectRef::RemoteId(remote_id.clone()), None)? {
 			Some(p) => {
-				let vtime = time::get_time();
+				let vtime = Utc::now();
 				let vid = p.ev.vid+1;
-				self.prepare("INSERT INTO project (remote_id, name, parent_eid, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &name, &parent_eid.to_sql()?, &p.ev.eid, &vid, &vtime])?;
+				self.prepare("INSERT INTO project (remote_id, name, parent_eid, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &name, &parent_eid.to_sql()?, &p.ev.eid, &vid, &chrono::offset::local::datetime_to_timespec(&vtime.naive_utc(), false)])?;
 				Ok(Project {
 					remote_id: remote_id,
 					name: name,
@@ -98,9 +102,9 @@ impl ProjectDataSource for rusqlite::Connection {
 			_ => {
 				self.prepare("INSERT INTO project_entity VALUES (NULL)")?.execute(&[])?;
 				let eid: DbId = self.last_insert_rowid();
-				let vtime = time::get_time();
+				let vtime = Utc::now();
 				let vid = 0;
-				self.prepare("INSERT INTO project (remote_id, name, parent_eid, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &name, &parent_eid.to_sql()?, &eid, &vid, &vtime])?;
+				self.prepare("INSERT INTO project (remote_id, name, parent_eid, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &name, &parent_eid.to_sql()?, &eid, &vid, &chrono::offset::datetime_to_timespec(vtime, false)])?;
 				Ok(Project {
 					remote_id: remote_id,
 					name: name,
@@ -116,7 +120,7 @@ impl ProjectDataSource for rusqlite::Connection {
 		}
 	}
 
-	fn get(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Option<Project>, rusqlite::Error> {
+	fn get(&self, proj: ProjectRef, when: Option<DateTime<Utc>>) -> Result<Option<Project>, rusqlite::Error> {
 		match proj {
 			ProjectRef::Obj(p) => {
 				Ok(Some(p))
@@ -143,7 +147,7 @@ impl ProjectDataSource for rusqlite::Connection {
 					ProjectRef::Obj(_) => { panic!("Impossible") }
 				};
 
-				let t = format!("{:?}", when.unwrap_or(time::get_time()));
+				let t = format!("{:?}", when.unwrap_or(Utc::now()));
 				let x = stmt.query_map(&[&a, &t], |row| {
 					Some(Project {
 						remote_id: row.get(0),
@@ -161,11 +165,11 @@ impl ProjectDataSource for rusqlite::Connection {
 			}
 		}
 	}
-	fn list(&self, when: Option<Timespec>) -> Result<Vec<Project>, Error> {
+	fn list(&self, when: Option<DateTime<Utc>>) -> Result<Vec<Project>, Error> {
 		let mut stmt = self.prepare("SELECT p.* FROM project AS p WHERE p.vid IN (SELECT MAX(vid) FROM project AS p2 WHERE p2.eid=p.eid AND p2.vtime <= ?) ORDER BY eid")?;
 		let t = match when {
 			Some(t) => { t }
-			_ => { time::get_time() }
+			_ => { Utc::now() }
 		};
 
 		let out = stmt.query_map(&[&t], |row| {
@@ -183,7 +187,7 @@ impl ProjectDataSource for rusqlite::Connection {
 		})?.map(|x| x.unwrap()).collect();
 		Ok(out)
 	}
-	fn parents(&self, proj: ProjectRef, when: Option<Timespec>) -> Result<Vec<Project>, Error> {
+	fn parents(&self, proj: ProjectRef, when: Option<DateTime<Utc>>) -> Result<Vec<Project>, Error> {
 		let psrc: &ProjectDataSource = self;
 		let mut cur = psrc.get(proj, when)?;
 		let mut output = Vec::new();
@@ -202,7 +206,7 @@ impl ProjectDataSource for rusqlite::Connection {
 		output.reverse();
 		Ok(output)
 	}
-	fn fqn(&self, p: ProjectRef, when: Option<Timespec>) -> Result<String, Error> {
+	fn fqn(&self, p: ProjectRef, when: Option<DateTime<Utc>>) -> Result<String, Error> {
 		let parents = self.parents(p, None)?;
 		let names: Vec<String> = parents.iter().map(|x| str::replace(x.name.as_str(), "/", "\\/").clone()).collect();
 		Ok(names.join("/"))
@@ -213,8 +217,8 @@ impl ProjectDataSource for rusqlite::Connection {
 pub struct Timeblock {
 	remote_id: Option<RemoteId>,
 	project: ProjectRef,
-	start: Timespec,
-	end: Option<Timespec>,
+	start: DateTime<Utc>,
+	end: Option<DateTime<Utc>>,
 	billable: bool,
 	notes: String,
 	tags: Vec<String>,
@@ -262,7 +266,7 @@ pub enum TimeblockFilter<'a> {
 	Project(Option<ProjectRef>),
 	Open(bool),
 	Tag(String),
-	AtTime(Timespec),
+	AtTime(DateTime<Utc>),
 }
 impl<'a> TimeblockFilter<'a> {
 	fn where_clause(&'a self) -> (String, Vec<&rusqlite::types::ToSql>) {
@@ -331,14 +335,15 @@ impl<'a> TimeblockFilter<'a> {
 }
 
 pub trait TimeblockDataSource {
-	fn upsert(&self, tb: Option<TimeblockRef>, remote_id: Option<RemoteId>, project: ProjectRef, start: Timespec, end: Option<Timespec>, billable: bool, notes: String, tags: Vec<String>, alive: bool) -> Result<Timeblock, Error>;
-	fn get(&self, tb: TimeblockRef, when: Option<Timespec>) -> Result<Option<Timeblock>, rusqlite::Error>;
+	fn upsert(&self, tb: Option<TimeblockRef>, remote_id: Option<RemoteId>, project: ProjectRef, start: DateTime<Utc>, end: Option<DateTime<Utc>>, billable: bool, notes: String, tags: Vec<String>, alive: bool) -> Result<Timeblock, Error>;
+	fn get(&self, tb: TimeblockRef, when: Option<DateTime<Utc>>) -> Result<Option<Timeblock>, rusqlite::Error>;
 	fn search(&self, filter: Option<TimeblockFilter>) -> Result<Vec<Timeblock>, rusqlite::Error>;
+	fn last_sync(&self) -> Result<Option<DateTime<Utc>>, rusqlite::Error>;
 }
 
 impl TimeblockDataSource for rusqlite::Connection {
 	fn search(&self, filter: Option<TimeblockFilter>) -> Result<Vec<Timeblock>, rusqlite::Error> {
-		let q = filter.unwrap_or(TimeblockFilter::AtTime(time::get_time()));
+		let q = filter.unwrap_or(TimeblockFilter::AtTime(Utc::now()));
 		let (where_clause, args) = q.where_clause();
 		let sql = format!("SELECT tb.* FROM timeblock AS tb INNER JOIN project AS p ON p.eid=tb.project_eid WHERE tb.vid IN (SELECT MAX(vid) FROM timeblock AS tb2 WHERE tb2.eid=tb.eid) AND {}", where_clause);
 
@@ -364,7 +369,7 @@ impl TimeblockDataSource for rusqlite::Connection {
 		Ok(out)
 	}
 
-	fn upsert(&self, tb: Option<TimeblockRef>, remote_id: Option<RemoteId>, project: ProjectRef, start: Timespec, end: Option<Timespec>, billable: bool, notes: String, tags: Vec<String>, alive: bool) -> Result<Timeblock, Error> {
+	fn upsert(&self, tb: Option<TimeblockRef>, remote_id: Option<RemoteId>, project: ProjectRef, start: DateTime<Utc>, end: Option<DateTime<Utc>>, billable: bool, notes: String, tags: Vec<String>, alive: bool) -> Result<Timeblock, Error> {
 		let psrc: &ProjectDataSource = self;
 		let tbsrc: &TimeblockDataSource = self;
 		//println!("{:?}", project);
@@ -375,7 +380,7 @@ impl TimeblockDataSource for rusqlite::Connection {
 		};
 		match g {
 			Some(tb) => {
-				let vtime = time::get_time();
+				let vtime = Utc::now();
 				let vid = tb.ev.vid+1;
 				let t = tags.join("\n").to_string();
 				self.prepare("INSERT INTO timeblock (remote_id, project_eid, start, end, billable, notes, tags, alive, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &proj.ev.eid, &start, &end, &billable, &notes, &t, &alive, &tb.ev.eid, &vid, &vtime])?;
@@ -398,7 +403,7 @@ impl TimeblockDataSource for rusqlite::Connection {
 			_ => {
 				self.prepare("INSERT INTO timeblock_entity VALUES (NULL, NULL, NULL)")?.execute(&[])?;
 				let eid: DbId = self.last_insert_rowid();
-				let vtime = time::get_time();
+				let vtime = Utc::now();
 				let vid = 0;
 				let t = tags.join("\n").to_string();
 				self.prepare("INSERT INTO timeblock (remote_id, project_eid, start, end, billable, notes, tags, alive, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &proj.ev.eid, &start, &end, &billable, &notes, &t, &alive, &eid, &vid, &vtime])?;
@@ -421,7 +426,7 @@ impl TimeblockDataSource for rusqlite::Connection {
 		}
 	}
 
-	fn get(&self, tb: TimeblockRef, when: Option<Timespec>) -> Result<Option<Timeblock>, rusqlite::Error> {
+	fn get(&self, tb: TimeblockRef, when: Option<DateTime<Utc>>) -> Result<Option<Timeblock>, rusqlite::Error> {
 		match tb {
 			TimeblockRef::Obj(tb) => {
 				Ok(Some(tb))
@@ -448,7 +453,7 @@ impl TimeblockDataSource for rusqlite::Connection {
 					TimeblockRef::Obj(_) => { panic!("Impossible") }
 				};
 
-				let t = format!("{:?}", when.unwrap_or(time::get_time()));
+				let t = format!("{:?}", when.unwrap_or(Utc::now()));
 				let x = stmt.query_map(&[&a, &t], |row| {
 					Some(Timeblock {
 						remote_id: row.get(0),
@@ -469,6 +474,14 @@ impl TimeblockDataSource for rusqlite::Connection {
 				x
 			}
 		}
+	}
+
+	fn last_sync(&self) -> Result<Option<DateTime<Utc>>, rusqlite::Error> {
+		let mut stmt = self.prepare("SELECT MAX(t.vtime) FROM timeblock")?;
+		let x = stmt.query_map(&[], |row| {
+			Some(row.get(0))
+		})?.next().unwrap_or(Ok(None));
+		x
 	}
 }
 
@@ -515,7 +528,7 @@ trait TimeTracker {
 		let s = t.search(Some(TimeblockFilter::Open(true)))?;
 		Ok(Status {
 			open: s.iter().map(|tb| {
-				(p.get(tb.project.clone(), None).unwrap().unwrap(), time::get_time() - tb.start)
+				(p.get(tb.project.clone(), None).unwrap().unwrap(), Utc::now() - tb.start)
 			}).collect()
 		})
 	}
@@ -525,7 +538,7 @@ trait TimeTracker {
 
 	fn punchin(&self, proj: &Project) -> Result<(), Error> {
 		let t: &TimeblockDataSource = self.conn();
-		t.upsert(None, None, ProjectRef::EId(proj.ev.eid), time::get_time(), None, false, "".to_string(), vec![], true)?;
+		t.upsert(None, None, ProjectRef::EId(proj.ev.eid), Utc::now(), None, false, "".to_string(), vec![], true)?;
 		Ok(())
 	}
 	
@@ -546,7 +559,7 @@ trait TimeTracker {
 		match tb {
 			Some(ref tb) => {
 				let pr = ProjectRef::EId(p.get(tb.project.clone(), None)?.unwrap().ev.eid);
-				t.upsert(Some(TimeblockRef::EId(tb.ev.eid)), tb.remote_id.clone(), pr, tb.start, Some(time::get_time()), tb.billable, tb.notes.clone(), tb.tags.clone(), tb.alive)?;
+				t.upsert(Some(TimeblockRef::EId(tb.ev.eid)), tb.remote_id.clone(), pr, tb.start, Some(Utc::now()), tb.billable, tb.notes.clone(), tb.tags.clone(), tb.alive)?;
 				Ok(())
 			}
 			_ => {
