@@ -367,6 +367,7 @@ impl TimeblockDataSource for rusqlite::Connection {
 	fn upsert(&self, tb: Option<TimeblockRef>, remote_id: Option<RemoteId>, project: ProjectRef, start: Timespec, end: Option<Timespec>, billable: bool, notes: String, tags: Vec<String>, alive: bool) -> Result<Timeblock, Error> {
 		let psrc: &ProjectDataSource = self;
 		let tbsrc: &TimeblockDataSource = self;
+		//println!("{:?}", project);
 		let proj = psrc.get(project, None)?.unwrap();
 		let g = match tb {
 			Some(tb) => { tbsrc.get(tb, None)? }
@@ -580,9 +581,10 @@ fn upgrade(conn: &Connection, vto: i32) -> Result<i32, rusqlite::Error> {
 						version INT NOT NULL DEFAULT 0,
 						teamwork_api_key TEXT,
 						teamwork_base_url TEXT,
+						teamwork_user_id INTEGER,
 						CHECK (
-							(teamwork_api_key IS NULL AND teamwork_base_url IS NULL) OR
-							(teamwork_api_key IS NOT NULL AND teamwork_base_url IS NOT NULL)
+							(teamwork_api_key IS NULL AND teamwork_base_url IS NULL AND teamwork_user_id IS NULL) OR
+							(teamwork_api_key IS NOT NULL AND teamwork_base_url IS NOT NULL AND teamwork_user_id IS NOT NULL)
 						)
 					);
 				", &[])?;

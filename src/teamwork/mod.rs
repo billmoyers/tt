@@ -34,7 +34,8 @@ use super::TimeblockDataSource;
 pub struct Teamwork<'a> {
 	conn: &'a Connection,
 	api_key: String,
-	base_url: String
+	base_url: String,
+	user_id: i32
 }
 
 header! { (XPage, "X-Page") => [i16] }
@@ -59,7 +60,6 @@ impl<'a> TimeTracker for Teamwork<'a> {
 
 		while page <= num_pages {
 			eprintln!("Teamwork.down: get project entries page {}/{}...", page, num_pages);
-
 			let req = self.get(format!("/projects.json?page={}", page).to_string())?;
 
 			let work = client.request(req).and_then(|res| {
@@ -84,56 +84,62 @@ impl<'a> TimeTracker for Teamwork<'a> {
 				}
 
 				Teamwork::body(res).and_then(|s| {
+					//println!("{:?}", s);
 					let r = serde_json::from_str::<TeamworkProjectsResult>(&s).unwrap();
 					let x = r.projects.into_iter();
 					stream::iter_ok::<_, hyper::Error>(x).collect()
 				})
 			});
-			let twprojects = core.run(work).unwrap();
+			core.run(work).unwrap();
+			page = page+1;
+		}
+		
+		page = 1;
+		num_pages = 1;
 
-			twprojects.into_iter().map(|p|{
-				let n = p.name.clone();
-				let pp = match psrc.upsert(n, p.pid(), None) {
-					Ok(p) => { p }
-					Err(e) => {
-						panic!("{:?}", e);
+		while page <= num_pages {
+			eprintln!("Teamwork.down: get task entries page {}/{}...", page, num_pages);
+			let req = self.get(format!("/tasks.json?page={}&showDeleted=yes&includeCompletedTasks=true&includeCompletedSubtasks=true", page).to_string())?;
+
+			let work = client.request(req).and_then(|res| {
+				assert_eq!(res.status(), hyper::Ok);
+				Teamwork::body(res).and_then(|s|{
+					//println!("{:?}", s);
+					#[derive(Deserialize, Debug)]
+					struct TeamworkTask {
+						id: serde_json::Value,
+						#[serde(rename="content")]
+						name: String,
+						#[serde(rename="project-id")]
+						project: i32
 					}
-				};
-
-				let req = self.get(format!("/projects/{}/tasks.json", p.id).to_string()).unwrap();
-				let work = client.request(req).and_then(|res| {
-					assert_eq!(res.status(), hyper::Ok);
-					Teamwork::body(res).and_then(|s|{
-						#[derive(Deserialize, Debug)]
-						struct TeamworkTask {
-							id: serde_json::Value,
-							#[serde(rename="content")]
-							name: String
+					impl TeamworkTask {
+						fn pid(&self) -> String {
+							format!("/tasks/{}", self.id)
 						}
-						impl TeamworkTask {
-							fn pid(&self) -> String {
-								format!("/tasks/{}", self.id)
-							}
+						fn ppid(&self) -> String {
+							format!("/projects/{}", self.project)
 						}
+					}
 
-						#[derive(Deserialize, Debug)]
-						struct TeamworkTasksResult {
-							#[serde(rename="STATUS")]
-							status: String,
-							#[serde(rename="todo-items")]
-							tasks: Vec<TeamworkTask>
-						}
+					#[derive(Deserialize, Debug)]
+					struct TeamworkTasksResult {
+						#[serde(rename="STATUS")]
+						status: String,
+						#[serde(rename="todo-items")]
+						tasks: Vec<TeamworkTask>
+					}
 
-						let r = serde_json::from_str::<TeamworkTasksResult>(&s).unwrap();
-						let x = r.tasks.into_iter().map(|t| {
-							let n = t.name.clone();
-							psrc.upsert(n, t.pid(), Some(pp.ev.eid))
-						});
-						stream::iter_ok::<_, hyper::Error>(x).collect()
-					})
-				});
-				core.run(work).unwrap();
-			}).collect::<()>();
+					let r = serde_json::from_str::<TeamworkTasksResult>(&s).unwrap();
+					let x = r.tasks.into_iter().map(|t| {
+						let n = t.name.clone();
+						let pp = psrc.get(super::ProjectRef::RemoteId(t.ppid()), None).unwrap().unwrap();
+						psrc.upsert(n, t.pid(), Some(pp.ev.eid))
+					});
+					stream::iter_ok::<_, hyper::Error>(x).collect()
+				})
+			});
+			core.run(work).unwrap();
 			page = page+1;
 		}
 		
@@ -143,7 +149,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 		while page <= num_pages {
 			eprintln!("Teamwork.down: get time entries page {}/{}...", page, num_pages);
 
-			let req = self.get(format!("/time_entries.json?page={}", page).to_string())?;
+			let req = self.get(format!("/time_entries.json?page={}&userId={}", page, self.user_id).to_string())?;
 
 			let work = client.request(req).and_then(|mut res| {
 				assert_eq!(res.status(), hyper::Ok);
@@ -164,6 +170,10 @@ impl<'a> TimeTracker for Teamwork<'a> {
 					isbillable: String,
 					date: String,
 					hours: serde_json::value::Value,
+					#[serde(rename="person-last-name")]
+					blah: String,
+					#[serde(rename="todo-item-name")]
+					blah2: String,
 				}
 
 				#[derive(Deserialize, Debug)]
@@ -179,6 +189,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 					let x = r.entries.into_iter().map(|e| {
 						//2016-01-01T06:17:00Z
 						let start = super::time::strptime(&e.date, "%Y-%m-%dT%H:%M:%S%z").unwrap().to_timespec();
+						//println!("{:?}", e);
 						let end = match (e.hours, e.minutes) {
 							(Value::Number(h), Value::Number(m)) => {
 								Some(start + Duration::hours(h.as_i64().unwrap()) + Duration::minutes(m.as_i64().unwrap()))
@@ -225,26 +236,17 @@ impl<'a> TimeTracker for Teamwork<'a> {
 
 impl<'a> Teamwork<'a> {
 	pub fn new(conn: &'a Connection) -> Result<Teamwork<'a>, Error> {
-		let mut stmt = conn.prepare("SELECT teamwork_api_key, teamwork_base_url FROM metadata")?;
+		let mut stmt = conn.prepare("SELECT teamwork_api_key, teamwork_base_url, teamwork_user_id FROM metadata")?;
 		
 		let mut api_key = None;
 		let mut base_url = None;
+		let mut user_id: Option<i32> = None;
 
 		stmt.query_map(&[], |row| {
 			api_key = row.get(0);
 			base_url = row.get(1);
+			user_id = row.get(2);
 		}).unwrap().next();
-
-		match api_key {
-			Some(_) => { }
-			_ => {
-				print!("Teamwork API Key: ");
-				std::io::stdout().flush()?;
-				let s = read_password()?;
-				api_key = Some(s);
-				
-			}
-		}
 
 		match base_url {
 			Some(_) => { }
@@ -256,18 +258,42 @@ impl<'a> Teamwork<'a> {
 			}
 		}
 		
+		match user_id {
+			Some(_) => { }
+			_ => {
+				print!("Teamwork User ID: ");
+				std::io::stdout().flush()?;
+				let s = read_password()?;
+				user_id = Some(s.parse::<i32>().unwrap());
+			}
+		}
+
+		match api_key {
+			Some(_) => { }
+			_ => {
+				print!("Teamwork API Key: ");
+				std::io::stdout().flush()?;
+				let s = read_password()?;
+				api_key = Some(s);
+				
+			}
+		}
+		
 		let a = api_key.unwrap();
 		let b = base_url.unwrap();
+		let c = user_id.unwrap();
 				
-		conn.execute("UPDATE metadata SET teamwork_api_key=?, teamwork_base_url=?", &[
+		conn.execute("UPDATE metadata SET teamwork_api_key=?, teamwork_base_url=?, teamwork_user_id=?", &[
 			&a,
-			&b
+			&b,
+			&c
 		])?;
 
 		Ok(Teamwork {
 			conn: conn,
 			api_key: a.clone(),
-			base_url: b.clone()
+			base_url: b.clone(),
+			user_id: c.clone(),
 		})
 	}
 
