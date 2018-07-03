@@ -121,7 +121,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 			let req = self.get(format!("/tasks.json?page={}&showDeleted=yes&includeCompletedTasks=true&includeCompletedSubtasks=true", page).to_string())?;
 
 			let work = client.request(req).and_then(|res| {
-				assert_eq!(res.status(), hyper::Ok);
+				//assert_eq!(res.status(), hyper::Ok);
 				Teamwork::body(res).and_then(|s|{
 					//println!("{:?}", s);
 					#[derive(Deserialize, Debug)]
@@ -152,8 +152,17 @@ impl<'a> TimeTracker for Teamwork<'a> {
 					let r = serde_json::from_str::<TeamworkTasksResult>(&s).unwrap();
 					let x = r.tasks.into_iter().map(|t| {
 						let n = t.name.clone();
-						let pp = psrc.get(super::ProjectRef::RemoteId(t.ppid()), None).unwrap().unwrap();
-						psrc.upsert(n, t.pid(), Some(pp.ev.eid))
+						let p = psrc.get(super::ProjectRef::RemoteId(t.ppid()), None)?;
+						match p {
+							Some(pp) => { 
+								Ok(psrc.upsert(n, t.pid(), Some(pp.ev.eid))) 
+							}
+							_ => {
+								Err(Error::TTError(format!(
+									"Failed finding project by ID for: {:?}", t
+								)))
+							}
+						}
 					});
 					stream::iter_ok::<_, hyper::Error>(x).collect()
 				})
@@ -322,7 +331,7 @@ impl<'a> Teamwork<'a> {
 			password: Some("xxx".to_string())
 		};
 
-		let uri = format!("{}/{}", self.base_url.clone(), uri).parse()?;
+		let uri = format!("{}{}", self.base_url.clone(), uri).parse()?;
 		let mut req = Request::new(Method::Get, uri);
 		req.headers_mut().set(hyper::header::Accept::json());
 		req.headers_mut().set(hyper::header::ContentType::json());
