@@ -19,9 +19,7 @@ use super::std;
 use super::hyper;
 use super::serde_json;
 use super::serde_json::{ Value };
-use super::time;
 use super::time::{ Duration };
-use super::chrono;
 use super::chrono::{ 
 	DateTime,
 	Utc,
@@ -56,7 +54,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 
 		let last_sync = match tsrc.last_sync()? {
 			Some(t) => {
-				Some(time::strftime("Ymd", t)?)
+				Some(t.format("Ymd"))
 			}
 			_ => {
 				None
@@ -75,7 +73,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 		while page <= num_pages {
 			eprintln!("Teamwork.down: get project entries page {}/{}...", page, num_pages);
 			let req = match last_sync {
-				Some(t) => {
+				Some(ref t) => {
 					self.get(format!("/projects.json?page={}&updatedAfterDate={}", page, t).to_string())?
 				}
 				_ => {
@@ -209,7 +207,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 					let r = serde_json::from_str::<TeamworkTimeEntriesResult>(&s).unwrap();
 					let x = r.entries.into_iter().map(|e| {
 						//2016-01-01T06:17:00Z
-						let start = super::time::strptime(&e.date, "%Y-%m-%dT%H:%M:%S%z").unwrap().to_timespec();
+						let start = e.date.parse::<DateTime<Utc>>().unwrap();
 						//println!("{:?}", e);
 						let end = match (e.hours, e.minutes) {
 							(Value::Number(h), Value::Number(m)) => {

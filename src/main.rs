@@ -23,12 +23,23 @@ use time::{
 use chrono::{
 	DateTime,
 	Utc,
+	ParseError,
 };
 use rusqlite::Connection;
 use rusqlite::types::ToSql;
 
 type RemoteId = String;
 type DbId = i64;
+
+pub fn chrono_to_sql(t: DateTime<Utc>) -> String {
+	t.to_rfc3339()
+}
+pub fn sql_to_chrono(s: String) -> Result<DateTime<Utc>, Error> {
+	match s.parse::<DateTime<Utc>>() {
+		Ok(x) => { Ok(x) }
+		Err(e) => { Err(Error::ChronoError(e)) }
+	}
+}
 
 #[derive(Debug, Clone)]
 pub struct EntityVersion {
@@ -86,7 +97,7 @@ impl ProjectDataSource for rusqlite::Connection {
 			Some(p) => {
 				let vtime = Utc::now();
 				let vid = p.ev.vid+1;
-				self.prepare("INSERT INTO project (remote_id, name, parent_eid, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &name, &parent_eid.to_sql()?, &p.ev.eid, &vid, &chrono::offset::local::datetime_to_timespec(&vtime.naive_utc(), false)])?;
+				self.prepare("INSERT INTO project (remote_id, name, parent_eid, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &name, &parent_eid.to_sql()?, &p.ev.eid, &vid, &chrono_to_sql(vtime)])?;
 				Ok(Project {
 					remote_id: remote_id,
 					name: name,
@@ -104,7 +115,7 @@ impl ProjectDataSource for rusqlite::Connection {
 				let eid: DbId = self.last_insert_rowid();
 				let vtime = Utc::now();
 				let vid = 0;
-				self.prepare("INSERT INTO project (remote_id, name, parent_eid, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &name, &parent_eid.to_sql()?, &eid, &vid, &chrono::offset::datetime_to_timespec(vtime, false)])?;
+				self.prepare("INSERT INTO project (remote_id, name, parent_eid, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &name, &parent_eid.to_sql()?, &eid, &vid, &chrono_to_sql(vtime)])?;
 				Ok(Project {
 					remote_id: remote_id,
 					name: name,
@@ -147,7 +158,7 @@ impl ProjectDataSource for rusqlite::Connection {
 					ProjectRef::Obj(_) => { panic!("Impossible") }
 				};
 
-				let t = format!("{:?}", when.unwrap_or(Utc::now()));
+				let t = chrono_to_sql(when.unwrap_or(Utc::now()));
 				let x = stmt.query_map(&[&a, &t], |row| {
 					Some(Project {
 						remote_id: row.get(0),
@@ -157,7 +168,7 @@ impl ProjectDataSource for rusqlite::Connection {
 						ev: EntityVersion {
 							eid: row.get(4),
 							vid: row.get(5),
-							vtime: row.get(6)
+							vtime: sql_to_chrono(row.get(6)).unwrap()
 						}
 					})
 				})?.next().unwrap_or(Ok(None));
@@ -172,7 +183,7 @@ impl ProjectDataSource for rusqlite::Connection {
 			_ => { Utc::now() }
 		};
 
-		let out = stmt.query_map(&[&t], |row| {
+		let out = stmt.query_map(&[&chrono_to_sql(t)], |row| {
 			Project {
 				remote_id: row.get(0),
 				name: row.get(1),
@@ -181,7 +192,7 @@ impl ProjectDataSource for rusqlite::Connection {
 				ev: EntityVersion {
 					eid: row.get(4),
 					vid: row.get(5),
-					vtime: row.get(6)
+					vtime: sql_to_chrono(row.get(6)).unwrap()
 				}
 			}
 		})?.map(|x| x.unwrap()).collect();
@@ -328,7 +339,8 @@ impl<'a> TimeblockFilter<'a> {
 				("(tb.tags LIKE ?)".to_string(), Vec::new())
 			}
 			TimeblockFilter::AtTime(ref t) => {
-				("(tb.vtime <= ?)".to_string(), vec![t])
+				let mut x = chrono_to_sql(*t).to_string();
+				(format!("(tb.vtime <= '{}')", x).to_string(), Vec::new())
 			}
 		}
 	}
@@ -338,7 +350,7 @@ pub trait TimeblockDataSource {
 	fn upsert(&self, tb: Option<TimeblockRef>, remote_id: Option<RemoteId>, project: ProjectRef, start: DateTime<Utc>, end: Option<DateTime<Utc>>, billable: bool, notes: String, tags: Vec<String>, alive: bool) -> Result<Timeblock, Error>;
 	fn get(&self, tb: TimeblockRef, when: Option<DateTime<Utc>>) -> Result<Option<Timeblock>, rusqlite::Error>;
 	fn search(&self, filter: Option<TimeblockFilter>) -> Result<Vec<Timeblock>, rusqlite::Error>;
-	fn last_sync(&self) -> Result<Option<DateTime<Utc>>, rusqlite::Error>;
+	fn last_sync(&self) -> Result<Option<DateTime<Utc>>, Error>;
 }
 
 impl TimeblockDataSource for rusqlite::Connection {
@@ -353,8 +365,11 @@ impl TimeblockDataSource for rusqlite::Connection {
 			Timeblock {
 				remote_id: row.get(0),
 				project: ProjectRef::EId(row.get(1)),
-				start: row.get(2),
-				end: row.get(3),
+				start: sql_to_chrono(row.get(2)).unwrap(),
+				end: match row.get(3) {
+					Some(s) => { Some(sql_to_chrono(s).unwrap()) }
+					None => { None }
+				},
 				billable: row.get(4),
 				notes: row.get(5),
 				tags: vec![row.get(6)],
@@ -362,7 +377,7 @@ impl TimeblockDataSource for rusqlite::Connection {
 				ev: EntityVersion {
 					eid: row.get(8),
 					vid: row.get(9),
-					vtime: row.get(10)
+					vtime: sql_to_chrono(row.get(10)).unwrap()
 				}
 			}
 		})?.map(|x| x.unwrap()).collect();
@@ -383,7 +398,11 @@ impl TimeblockDataSource for rusqlite::Connection {
 				let vtime = Utc::now();
 				let vid = tb.ev.vid+1;
 				let t = tags.join("\n").to_string();
-				self.prepare("INSERT INTO timeblock (remote_id, project_eid, start, end, billable, notes, tags, alive, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &proj.ev.eid, &start, &end, &billable, &notes, &t, &alive, &tb.ev.eid, &vid, &vtime])?;
+				let oend = match end {
+					Some(s) => { Some(chrono_to_sql(s)) }
+					None => None
+				};
+				self.prepare("INSERT INTO timeblock (remote_id, project_eid, start, end, billable, notes, tags, alive, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &proj.ev.eid, &chrono_to_sql(start), &oend, &billable, &notes, &t, &alive, &tb.ev.eid, &vid, &chrono_to_sql(vtime)])?;
 				Ok(Timeblock {
 					remote_id: remote_id,
 					project: ProjectRef::EId(proj.ev.eid),
@@ -406,7 +425,11 @@ impl TimeblockDataSource for rusqlite::Connection {
 				let vtime = Utc::now();
 				let vid = 0;
 				let t = tags.join("\n").to_string();
-				self.prepare("INSERT INTO timeblock (remote_id, project_eid, start, end, billable, notes, tags, alive, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &proj.ev.eid, &start, &end, &billable, &notes, &t, &alive, &eid, &vid, &vtime])?;
+				let oend = match end {
+					Some(s) => { Some(chrono_to_sql(s)) }
+					None => { None }
+				};
+				self.prepare("INSERT INTO timeblock (remote_id, project_eid, start, end, billable, notes, tags, alive, eid, vid, vtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")?.execute(&[&remote_id, &proj.ev.eid, &chrono_to_sql(start), &oend, &billable, &notes, &t, &alive, &eid, &vid, &chrono_to_sql(vtime)])?;
 				Ok(Timeblock {
 					remote_id: remote_id,
 					project: ProjectRef::EId(proj.ev.eid),
@@ -453,13 +476,16 @@ impl TimeblockDataSource for rusqlite::Connection {
 					TimeblockRef::Obj(_) => { panic!("Impossible") }
 				};
 
-				let t = format!("{:?}", when.unwrap_or(Utc::now()));
+				let t = chrono_to_sql(when.unwrap_or(Utc::now()));
 				let x = stmt.query_map(&[&a, &t], |row| {
 					Some(Timeblock {
 						remote_id: row.get(0),
 						project: ProjectRef::EId(row.get(1)),
-						start: row.get(2),
-						end: row.get(3),
+						start: sql_to_chrono(row.get(2)).unwrap(),
+						end: match row.get(3) {
+							Some(s) => { Some(sql_to_chrono(s).unwrap()) }
+							None => { None }
+						},
 						billable: row.get(4),
 						notes: row.get(5),
 						tags: vec![row.get(6)],
@@ -467,7 +493,7 @@ impl TimeblockDataSource for rusqlite::Connection {
 						ev: EntityVersion {
 							eid: row.get(8),
 							vid: row.get(9),
-							vtime: row.get(10)
+							vtime: sql_to_chrono(row.get(10)).unwrap()
 						}
 					})
 				})?.next().unwrap_or(Ok(None));
@@ -476,12 +502,14 @@ impl TimeblockDataSource for rusqlite::Connection {
 		}
 	}
 
-	fn last_sync(&self) -> Result<Option<DateTime<Utc>>, rusqlite::Error> {
-		let mut stmt = self.prepare("SELECT MAX(t.vtime) FROM timeblock")?;
-		let x = stmt.query_map(&[], |row| {
-			Some(row.get(0))
-		})?.next().unwrap_or(Ok(None));
-		x
+	fn last_sync(&self) -> Result<Option<DateTime<Utc>>, Error> {
+		let mut stmt = self.prepare("SELECT MAX(vtime) FROM timeblock")?;
+		stmt.query_row(&[], |row| {
+			match row.get(0) {
+				Some(s) => { Ok(Some(sql_to_chrono(s)?)) }
+				None => { Ok(None) }
+			}
+		})?
 	}
 }
 
@@ -491,7 +519,8 @@ pub enum Error {
 	IOError(std::io::Error),
 	HyperError(hyper::Error),
 	SerdeError(serde_json::Error),
-	TTError(String)
+	TTError(String),
+	ChronoError(chrono::ParseError)
 }
 
 impl std::convert::From<rusqlite::Error> for Error {
@@ -512,6 +541,11 @@ impl std::convert::From<hyper::Error> for Error {
 impl std::convert::From<serde_json::Error> for Error {
 	fn from(e: serde_json::Error) -> Error {
 		Error::SerdeError(e)
+	}
+}
+impl std::convert::From<chrono::ParseError> for Error {
+	fn from(e: chrono::ParseError) -> Error {
+		Error::ChronoError(e)
 	}
 }
 
