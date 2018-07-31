@@ -54,7 +54,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 
 		let last_sync = match tsrc.last_sync()? {
 			Some(t) => {
-				Some(t.format("Ymd"))
+				Some(t.format("%Y%m%d"))
 			}
 			_ => {
 				None
@@ -104,8 +104,11 @@ impl<'a> TimeTracker for Teamwork<'a> {
 
 				Teamwork::body(res).and_then(|s| {
 					//println!("{:?}", s);
-					let r = serde_json::from_str::<TeamworkProjectsResult>(&s).unwrap();
-					let x = r.projects.into_iter();
+			 		let r = serde_json::from_str::<TeamworkProjectsResult>(&s).unwrap();
+					let x = r.projects.into_iter().map(|t| {
+						let n = t.name.clone();
+						psrc.upsert(n, t.pid(), None)
+					});
 					stream::iter_ok::<_, hyper::Error>(x).collect()
 				})
 			});
@@ -118,7 +121,14 @@ impl<'a> TimeTracker for Teamwork<'a> {
 
 		while page <= num_pages {
 			eprintln!("Teamwork.down: get task entries page {}/{}...", page, num_pages);
-			let req = self.get(format!("/tasks.json?page={}&showDeleted=yes&includeCompletedTasks=true&includeCompletedSubtasks=true", page).to_string())?;
+			let req = match last_sync {
+				Some(ref t) => {
+					self.get(format!("/tasks.json?page={}&showDeleted=yes&includeCompletedTasks=true&includeCompletedSubtasks=true&updatedAfterDate={}", page, t).to_string())?
+				}
+				_ => {
+					self.get(format!("/tasks.json?page={}&showDeleted=yes&includeCompletedTasks=true&includeCompletedSubtasks=true", page).to_string())?
+				}
+			};
 
 			let work = client.request(req).and_then(|res| {
 				//assert_eq!(res.status(), hyper::Ok);
@@ -152,10 +162,11 @@ impl<'a> TimeTracker for Teamwork<'a> {
 					let r = serde_json::from_str::<TeamworkTasksResult>(&s).unwrap();
 					let x = r.tasks.into_iter().map(|t| {
 						let n = t.name.clone();
-						let p = psrc.get(super::ProjectRef::RemoteId(t.ppid()), None)?;
+						let pref = super::ProjectRef::RemoteId(t.ppid());
+						let p = psrc.get(pref, None)?;
 						match p {
 							Some(pp) => { 
-								Ok(psrc.upsert(n, t.pid(), Some(pp.ev.eid))) 
+								psrc.upsert(n, t.pid(), Some(pp.ev.eid))
 							}
 							_ => {
 								Err(Error::TTError(format!(
@@ -177,7 +188,14 @@ impl<'a> TimeTracker for Teamwork<'a> {
 		while page <= num_pages {
 			eprintln!("Teamwork.down: get time entries page {}/{}...", page, num_pages);
 
-			let req = self.get(format!("/time_entries.json?page={}&userId={}", page, self.user_id).to_string())?;
+			let req = match last_sync {
+				Some(ref t) => {
+					self.get(format!("/time_entries.json?page={}&userId={}&updatedAfterDate={}", page, self.user_id, t).to_string())?
+				}
+				_ => {
+					self.get(format!("/time_entries.json?page={}&userId={}", page, self.user_id).to_string())?
+				}
+			};
 
 			let work = client.request(req).and_then(|mut res| {
 				assert_eq!(res.status(), hyper::Ok);
@@ -219,6 +237,11 @@ impl<'a> TimeTracker for Teamwork<'a> {
 						let start = e.date.parse::<DateTime<Utc>>().unwrap();
 						//println!("{:?}", e);
 						let end = match (e.hours, e.minutes) {
+							(Value::String(hs), Value::String(ms)) => {
+								let h = hs.parse::<i64>().unwrap();
+								let m = ms.parse::<i64>().unwrap();
+								Some(start + Duration::hours(h) + Duration::minutes(m))
+							}
 							(Value::Number(h), Value::Number(m)) => {
 								Some(start + Duration::hours(h.as_i64().unwrap()) + Duration::minutes(m.as_i64().unwrap()))
 							}
@@ -326,6 +349,7 @@ impl<'a> Teamwork<'a> {
 	}
 
 	pub fn get(&self, uri: String) -> Result<hyper::Request, hyper::Error> {
+		println!("GET {}", uri);
 		let hdr = hyper::header::Basic {
 			username: self.api_key.clone(),
 			password: Some("xxx".to_string())

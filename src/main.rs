@@ -92,6 +92,7 @@ pub trait ProjectDataSource {
 
 impl ProjectDataSource for rusqlite::Connection {
 	fn upsert(&self, name: String, remote_id: RemoteId, parent_eid: Option<DbId>) -> Result<Project, Error> {
+		//println!("ProjectDataSource.upsert(name={}, remote_id={})", name, remote_id);
 		let psrc: &ProjectDataSource = self;
 		match psrc.get(ProjectRef::RemoteId(remote_id.clone()), None)? {
 			Some(p) => {
@@ -160,6 +161,8 @@ impl ProjectDataSource for rusqlite::Connection {
 
 				let t = chrono_to_sql(when.unwrap_or(Utc::now()));
 				let x = stmt.query_map(&[&a, &t], |row| {
+					let y: String = row.get(6);
+					//println!("{}", y);
 					Some(Project {
 						remote_id: row.get(0),
 						name: row.get(1),
@@ -387,8 +390,11 @@ impl TimeblockDataSource for rusqlite::Connection {
 	fn upsert(&self, tb: Option<TimeblockRef>, remote_id: Option<RemoteId>, project: ProjectRef, start: DateTime<Utc>, end: Option<DateTime<Utc>>, billable: bool, notes: String, tags: Vec<String>, alive: bool) -> Result<Timeblock, Error> {
 		let psrc: &ProjectDataSource = self;
 		let tbsrc: &TimeblockDataSource = self;
-		//println!("{:?}", project);
-		let proj = psrc.get(project, None)?.unwrap();
+		let rproj = psrc.get(project.clone(), None)?;
+		if rproj.is_none() {
+			return Err(Error::TTError(format!("Failed finding project: {:?}", project).to_string()));
+		}
+		let proj = rproj.unwrap();
 		let g = match tb {
 			Some(tb) => { tbsrc.get(tb, None)? }
 			None => None
