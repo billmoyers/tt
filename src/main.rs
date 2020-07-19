@@ -1,3 +1,4 @@
+#![allow(unused_variables)]
 extern crate rusqlite;
 extern crate time;
 extern crate clap;
@@ -93,7 +94,7 @@ pub trait ProjectDataSource {
 impl ProjectDataSource for rusqlite::Connection {
 	fn upsert(&self, name: String, remote_id: RemoteId, parent_eid: Option<DbId>) -> Result<Project, Error> {
 		//println!("ProjectDataSource.upsert(name={}, remote_id={})", name, remote_id);
-		let psrc: &ProjectDataSource = self;
+		let psrc: &dyn ProjectDataSource = self;
 		match psrc.get(ProjectRef::RemoteId(remote_id.clone()), None)? {
 			Some(p) => {
 				let vtime = Utc::now();
@@ -202,7 +203,7 @@ impl ProjectDataSource for rusqlite::Connection {
 		Ok(out)
 	}
 	fn parents(&self, proj: ProjectRef, when: Option<DateTime<Utc>>) -> Result<Vec<Project>, Error> {
-		let psrc: &ProjectDataSource = self;
+		let psrc: &dyn ProjectDataSource = self;
 		let mut cur = psrc.get(proj, when)?;
 		let mut output = Vec::new();
 		while cur.is_some() {
@@ -283,7 +284,7 @@ pub enum TimeblockFilter<'a> {
 	AtTime(DateTime<Utc>),
 }
 impl<'a> TimeblockFilter<'a> {
-	fn where_clause(&'a self) -> (String, Vec<&rusqlite::types::ToSql>) {
+	fn where_clause(&'a self) -> (String, Vec<&dyn rusqlite::types::ToSql>) {
 		match *self {
 			TimeblockFilter::Ref(ref tb) => {
 				match tb {
@@ -342,7 +343,7 @@ impl<'a> TimeblockFilter<'a> {
 				("(tb.tags LIKE ?)".to_string(), Vec::new())
 			}
 			TimeblockFilter::AtTime(ref t) => {
-				let mut x = chrono_to_sql(*t).to_string();
+				let x = chrono_to_sql(*t).to_string();
 				(format!("(tb.vtime <= '{}')", x).to_string(), Vec::new())
 			}
 		}
@@ -388,8 +389,8 @@ impl TimeblockDataSource for rusqlite::Connection {
 	}
 
 	fn upsert(&self, tb: Option<TimeblockRef>, remote_id: Option<RemoteId>, project: ProjectRef, start: DateTime<Utc>, end: Option<DateTime<Utc>>, billable: bool, notes: String, tags: Vec<String>, alive: bool) -> Result<Timeblock, Error> {
-		let psrc: &ProjectDataSource = self;
-		let tbsrc: &TimeblockDataSource = self;
+		let psrc: &dyn ProjectDataSource = self;
+		let tbsrc: &dyn TimeblockDataSource = self;
 		let rproj = psrc.get(project.clone(), None)?;
 		if rproj.is_none() {
 			return Err(Error::TTError(format!("Failed finding project: {:?}", project).to_string()));
@@ -563,8 +564,8 @@ trait TimeTracker {
 	fn conn(&self) -> &Connection;
 	
 	fn status(&self) -> Result<Status, Error> {
-		let t: &TimeblockDataSource = self.conn();
-		let p: &ProjectDataSource = self.conn();
+		let t: &dyn TimeblockDataSource = self.conn();
+		let p: &dyn ProjectDataSource = self.conn();
 		let s = t.search(Some(TimeblockFilter::Open(true)))?;
 		Ok(Status {
 			open: s.iter().map(|tb| {
@@ -577,14 +578,14 @@ trait TimeTracker {
 	fn up(&self) -> Result<(), Error>;
 
 	fn punchin(&self, proj: &Project) -> Result<(), Error> {
-		let t: &TimeblockDataSource = self.conn();
+		let t: &dyn TimeblockDataSource = self.conn();
 		t.upsert(None, None, ProjectRef::EId(proj.ev.eid), Utc::now(), None, false, "".to_string(), vec![], true)?;
 		Ok(())
 	}
 	
 	fn punchout(&self, proj: Option<&Project>) -> Result<(), Error> {
-		let t: &TimeblockDataSource = self.conn();
-		let p: &ProjectDataSource = self.conn();
+		let t: &dyn TimeblockDataSource = self.conn();
+		let p: &dyn ProjectDataSource = self.conn();
 		let s = t.search(Some(TimeblockFilter::Open(true)))?;
 
 		let tb = match proj {
@@ -653,15 +654,15 @@ fn upgrade(conn: &Connection, vto: i32) -> Result<i32, rusqlite::Error> {
 			}
 		}
 		
-		try!(conn.execute("
+		conn.execute("
 			UPDATE metadata SET version=?
-		", &[&v]));
+		", &[&v])?;
 	}
 
 	Ok(vto)
 }
 
-fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
+fn dispatch(m: &clap::ArgMatches, s: &dyn TimeTracker) -> Result<(), Error> {
 	match m.subcommand() {
 		("completions", Some(m)) => {
 			let mut app = cli::build_cli();
@@ -688,7 +689,7 @@ fn dispatch(m: &clap::ArgMatches, s: &TimeTracker) -> Result<(), Error> {
 			let index = projects.iter().position(|p| {
 				s.conn().fqn(ProjectRef::EId(p.ev.eid), None).unwrap() == name
 			}).unwrap();
-			let mut proj = projects.get(index).unwrap();
+			let proj = projects.get(index).unwrap();
 			let t = s.punchin(proj)?;
 			println!("{}", serde_json::to_string_pretty(&t)?);
 		}

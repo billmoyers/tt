@@ -1,3 +1,4 @@
+#![allow(unused_variables)]
 use std::io::{
 	Write
 };
@@ -25,7 +26,6 @@ use super::chrono::{
 	Utc,
 };
 
-use super::hyper_tls;
 use super::tokio_core;
 
 use futures::future;
@@ -49,8 +49,8 @@ impl<'a> TimeTracker for Teamwork<'a> {
 		self.conn
 	}
 	fn down(&self) -> Result<(), Error> {
-		let psrc: &ProjectDataSource = self.conn;
-		let tsrc: &TimeblockDataSource = self.conn;
+		let psrc: &dyn ProjectDataSource = self.conn;
+		let tsrc: &dyn TimeblockDataSource = self.conn;
 
 		let last_sync = match tsrc.last_sync()? {
 			Some(t) => {
@@ -64,7 +64,7 @@ impl<'a> TimeTracker for Teamwork<'a> {
 		let mut core = tokio_core::reactor::Core::new().unwrap();
 		let handle = core.handle();
 		let client = hyper::Client::configure()
-			.connector(hyper_tls::HttpsConnector::new(4, &handle).unwrap())
+			//.connector(hyper_tls::HttpsConnector::new(4, &handle).unwrap())
 			.build(&handle);
 
 		let mut page = 1;
@@ -363,7 +363,7 @@ impl<'a> Teamwork<'a> {
 		Ok(req)
 	}
 
-	pub fn body(res: hyper::Response) -> Box<future::Future<Item=String, Error=hyper::Error> + Send> {
+	pub fn body(res: hyper::Response) -> Box<dyn future::Future<Item=String, Error=hyper::Error> + Send> {
 		Box::new(res.body().fold(Vec::new(), |mut v, chunk| {
 			v.extend(&chunk[..]);
 			future::ok::<_, hyper::Error>(v)
